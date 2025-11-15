@@ -1,6 +1,8 @@
 # HSGSP: Hybrid Spectral-Guided Structured Pruning
 
-This repository implements the HSGSP pipeline for training, pruning, and evaluating VGG-style image classifiers on CIFAR-10/100. The pipeline couples strong regularized training (mixup, cutout, frequency-aware regularizers) with a hybrid pruning baseline that blends DCT-based frequency analysis, gradient saliency, and iterative fine-tuning to produce compact models with bounded accuracy loss. Every experiment is reproducible from the command line and writes its artifacts under timestamped folders in `EXPERIMENT/`.
+This repository implements the HSGSP pipeline for training, pruning, and evaluating VGG-style image classifiers on CIFAR-10/100. The pipeline couples strong regularized training (mixup, cutout, frequency-aware regularizers) with a hybrid pruning baseline that blends DCT-based frequency analysis, gradient saliency, and iterative fine-tuning to produce compact models with bounded accuracy loss. Every experiment is reproducible from the command line and writes its artifacts under timestamped folders in `EXPERIMENT/`. This is the official implementation for our paper submitted to IEEE Latin America Transaction.
+
+
 
 ## Project layout
 
@@ -150,4 +152,10 @@ Evaluation writes confusion matrices, per-class precision/recall/F1, FLOPs, and 
 - **Speeding up experiments:** reduce `Config.hybrid_iterations`, `hybrid_finetune_epochs`, or disable mixup/augmentation while debugging.
 - **Custom datasets:** the repo is CIFAR-specific out of the box. To adapt it, extend `DataLoader` and update `_load_datasets` / `_build_model` in `main.py` plus the `Config` defaults for class counts and input shapes.
 
-With the above pieces you can document every experiment (logs + TensorBoard), keep checkpoints organized, and quickly rerun the entire HSGSP pipeline on CIFAR-10 or CIFAR-100. Happy pruning!
+# Authors
+- Thanh-Thien Nguyen - University of Information Technology, Vietnam National University Ho Chi Minh City
+- Hoang-Loc Tran - University of Information Technology, Vietnam National University Ho Chi Minh City
+- Vo-Chi-Dung Nguyen - University of Information Technology, Vietnam National University Ho Chi Minh City
+- Viet-An Nguyen - University of Information Technology, Vietnam National University Ho Chi Minh City
+- Duc-Lung Vu - University of Information Technology, Vietnam National University Ho Chi Minh City
+
