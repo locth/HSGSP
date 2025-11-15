@@ -110,7 +110,7 @@ python main.py \
       --model_path path/to/baseline.h5 \
       --pruned_model_path path/to/pruned.h5
   ```
-  Produces accuracy, Top-5, precision/recall/F1, inference latency, FLOPs, and parameter counts for each supplied model.
+  Produces accuracy, Top-5, inference latency, FLOPs, and parameter counts for each supplied model.
 
 - **Simple manual fine-tune**  
   ```bash
@@ -142,7 +142,7 @@ To launch TensorBoard:
 tensorboard --logdir EXPERIMENT --port 6006
 ```
 
-Evaluation writes confusion matrices, per-class precision/recall/F1, FLOPs, and latency measurements to the log and returns them to `main.py` for printing. Visual assets (frequency spectra, pruning histograms, compression comparisons) can be produced via the methods in `utils/visualization.py`.
+Evaluation writes confusion matrices, FLOPs, and latency measurements to the log and returns them to `main.py` for printing. Visual assets (frequency spectra, pruning histograms, compression comparisons) can be produced via the methods in `utils/visualization.py`.
 
 ## Tips & troubleshooting
 
