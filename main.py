@@ -1,28 +1,30 @@
 import os
 import argparse
-import tensorflow as tf
+from altair import ParseValue
+import torch
+import copy
+import torch.nn as nn
 
 from config import Config
 from utils.logger import Logger
-from data.data_loader import DataLoader
+from data.data_loader import HSGSP_DataLoader
+# from torch.utils.data import DataLoader 
 from models.vgg16 import VGG16
 from training.trainer import HSGSPTrainer
 from training.evaluator import ModelEvaluator
 from utils.visualization import Visualizer
 from pruning.hybrid_baseline import HybridFrequencyBaseline
 
-
-def _load_datasets(data_loader: DataLoader, task: str, logger: Logger):
+def _load_datasets(data_loader: HSGSP_DataLoader, task: str, logger: Logger):
     if task == 'cifar10':
         logger.info('Loading CIFAR-10 dataset...')
-        train_ds, val_ds, test_ds, train_clean_ds = data_loader.load_cifar10()
-        return 'CIFAR-10', train_ds, val_ds, test_ds, train_clean_ds
+        train_dl, val_dl, test_dl, train_clean_dl = data_loader.load_cifar10()
+        return 'CIFAR-10', train_dl, val_dl, test_dl, train_clean_dl
     if task == 'cifar100':
         logger.info('Loading CIFAR-100 dataset...')
-        train_ds, val_ds, test_ds, train_clean_ds = data_loader.load_cifar100()
-        return 'CIFAR-100', train_ds, val_ds, test_ds, train_clean_ds
+        train_dl, val_dl, test_dl, train_clean_dl = data_loader.load_cifar100()
+        return 'CIFAR-100', train_dl, val_dl, test_dl, train_clean_dl
     raise ValueError(f"Unsupported task: {task}")
-
 
 def _build_model(config: Config, task: str):
     builder = VGG16(config)
@@ -36,7 +38,7 @@ def _build_model(config: Config, task: str):
             num_classes=config.num_classes_cifar100,
             input_shape=config.input_shape_cifar100,
         )
-    raise ValueError(f"Unsupported task for VGG16: {task}")
+    raise ParseValue(f"Unsupported task for VGG16: {task}")
 
 def main(args):
     config = Config(task=args.task)
@@ -46,61 +48,68 @@ def main(args):
     logger = Logger(config)
     logger.info('Starting hybrid pruning experiment')
 
-    data_loader = DataLoader(config)
+    data_loader = HSGSP_DataLoader(config)
     trainer = HSGSPTrainer(config)
     evaluator = ModelEvaluator(config)
     visualizer = Visualizer(config)
     hybrid_baseline = HybridFrequencyBaseline(config, trainer, evaluator)
 
-    dataset_name, train_ds, val_ds, test_ds, train_clean_ds = _load_datasets(data_loader, args.task, logger)
+    dataset_name, train_dl, val_dl, test_dl, train_clean_dl = _load_datasets(data_loader, args.task, logger)
 
     pruned_model = None
     if args.pruned_model_path:
         logger.info(f"Loading pruned model from {args.pruned_model_path}")
-        pruned_model = tf.keras.models.load_model(args.pruned_model_path)
+        pruned_model = torch.load(args.pruned_model_path, map_location='cpu')
 
+    
     if args.model_path:
         logger.info(f"Loading model from {args.model_path}")
-        model = tf.keras.models.load_model(args.model_path)
+        # model = torch.load(args.model_path, map_location='cpu')
+        model = _build_model(config, args.task)
+        model.load_state_dict(torch.load(args.model_path))
     else:
         logger.info('Building new model...')
         model = _build_model(config, args.task)
 
     logger.info('Model summary:')
-    model.summary(print_fn=logger.info)
+    logger.info(str(model))
 
     if args.train:
         logger.info('Starting training phase...')
         history = trainer.train_cifar(
             model,
-            train_ds,
-            val_ds,
-            epochs=args.epochs or config.default_epochs,
-            train_eval_dataset=train_clean_ds,
+            train_dl,
+            val_dl,
+            epochs=args.epochs or config.default_epochs,    
+            train_eval_dataloader=train_clean_dl,
         )
-        model_save_path = os.path.join(config.models_dir, f"{args.task}_trained_model.h5")
-        model.save(model_save_path)
+        model_save_path = os.path.join(config.models_dir, f"{args.task}_trained_model.pt")
+        torch.save(model.state_dict(), model_save_path)
         logger.info(f"Trained model saved at {model_save_path}")
         visualizer.plot_training_history(
             history,
             save_path=os.path.join(config.plots_dir, 'training_history.png'),
         )
 
+    # baseline_for_eval = None
+    # if args.eval:
+    #     baseline_for_eval = copy.deepcopy(model)
     baseline_for_eval = None
-    if args.eval:
-        baseline_for_eval = tf.keras.models.clone_model(model)
-        baseline_for_eval.set_weights(model.get_weights())
+    if args.eval and args.train:
+        logger.info('Creating baseline copy for evaluation...')
+        baseline_for_eval = _build_model(config, args.task)
+        baseline_for_eval.load_state_dict(model.state_dict())
 
     hybrid_history = None
     if args.prune:
         logger.info('Running hybrid pruning baseline...')
-        activation_source = train_clean_ds or train_ds or val_ds
+        activation_source = train_clean_dl or train_dl or val_dl
         pruned_model, hybrid_history = hybrid_baseline.run_pipeline(
             model=model,
-            train_ds=train_ds,
-            val_ds=val_ds,
-            train_eval_ds=train_clean_ds,
-            activation_ds=activation_source,
+            train_dl=train_dl,
+            val_dl=val_dl,
+            train_eval_dl=train_clean_dl,
+            activation_dl=activation_source,
         )
 
         model = pruned_model
@@ -115,23 +124,20 @@ def main(args):
                 f"Hybrid iteration {record.get('iteration')}: "
                 f"kappa_ratio={kappa:.3f}, val_loss={loss_str}, val_acc={acc_str}"
             )
-        pruned_model_path = os.path.join(config.models_dir, f"{args.task}_hybrid_pruned.h5")
-        model.save(pruned_model_path)
+        pruned_model_path = os.path.join(config.models_dir, f"{args.task}_hybrid_pruned.pt")
+        torch.save(model.state_dict(), pruned_model_path)
         logger.info(f"Hybrid pruned model saved at {pruned_model_path}")
 
     if args.simple_finetune:
         logger.info('Running manual simple fine-tune...')
         tuned_model, finetune_meta = trainer.fine_tune_cifar(
             model=pruned_model,
-            train_dataset=train_ds,
-            val_dataset=val_ds,
+            train_dataloader=train_dl,
+            val_dataloader=val_dl,
             epochs=config.simple_finetune_epochs,
             learning_rate=config.simple_finetune_lr,
             log_dir_suffix="manual_finetune",
-            train_eval_dataset=train_clean_ds,
-            # teacher_model=model if bool(model) else None,
-            # kd_alpha=config.distill_alpha,
-            # kd_temperature=config.distill_temperature
+            train_eval_dataloader=train_clean_dl,
         )
         model = tuned_model
         pruned_model = tuned_model
@@ -143,7 +149,7 @@ def main(args):
         logger.info('Starting evaluation phase...')
         original_model = baseline_for_eval or model
         logger.info(f"Evaluating original model on {dataset_name}...")
-        original_results = evaluator.evaluate_model(original_model, test_ds, dataset_name)
+        original_results = evaluator.evaluate_model(original_model, test_dl, dataset_name)
         logger.info('=' * 50)
         logger.info(f"Original Model Results on {dataset_name}:")
         logger.info(f"  Parameters: {original_results['total_params']:,}")
@@ -157,7 +163,7 @@ def main(args):
 
         if pruned_model is not None:
             logger.info(f"Evaluating pruned model on {dataset_name}...")
-            pruned_results = evaluator.evaluate_model(pruned_model, test_ds, dataset_name)
+            pruned_results = evaluator.evaluate_model(pruned_model, test_dl, dataset_name)
             logger.info('=' * 50)
             logger.info(f"Pruned Model Results on {dataset_name}:")
             logger.info(f"  Parameters: {pruned_results['total_params']:,}")
@@ -168,7 +174,6 @@ def main(args):
             logger.info(f"  Accuracy: {pruned_results['accuracy']:.4f}")
             logger.info(f"  Top-5 Accuracy: {pruned_results['top5_accuracy']:.2f}")
             logger.info('=' * 50)
-
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Hybrid Frequency-Aware Pruning for CIFAR models')

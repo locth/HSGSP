@@ -1,6 +1,5 @@
 import matplotlib.pyplot as plt
 import numpy as np
-import tensorflow as tf
 from typing import Dict, List, Optional
 import seaborn as sns
 
@@ -54,7 +53,7 @@ class Visualizer:
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.show()
+        plt.close()
     
     def plot_pruning_analysis(self,
                             importance_scores: Dict[str, np.ndarray],
@@ -86,7 +85,7 @@ class Visualizer:
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.show()
+        plt.close()
     
     def plot_training_history(self,
                             history: Dict[str, List],
@@ -95,7 +94,7 @@ class Visualizer:
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         
         # Plot loss
-        axes[0].plot(history['loss'], label='Train Loss')
+        axes[0].plot(history['train_loss'], label='Train Loss')
         axes[0].plot(history['val_loss'], label='Val Loss')
         axes[0].set_title('Model Loss')
         axes[0].set_xlabel('Epoch')
@@ -104,8 +103,8 @@ class Visualizer:
         axes[0].grid(True, alpha=0.3)
         
         # Plot accuracy
-        axes[1].plot(history['accuracy'], label='Train Accuracy')
-        axes[1].plot(history['val_accuracy'], label='Val Accuracy')
+        axes[1].plot(history['train_acc'], label='Train Accuracy')
+        axes[1].plot(history['val_acc'], label='Val Accuracy')
         axes[1].set_title('Model Accuracy')
         axes[1].set_xlabel('Epoch')
         axes[1].set_ylabel('Accuracy')
@@ -116,7 +115,7 @@ class Visualizer:
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        # plt.show()
+        plt.close()
     
     def plot_compression_comparison(self,
                                    original_metrics: Dict,
@@ -195,7 +194,7 @@ class Visualizer:
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.show()
+        plt.close()
     
     def plot_confusion_matrix(self,
                             confusion_matrix: np.ndarray,
@@ -213,7 +212,7 @@ class Visualizer:
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.show()
+        plt.close()
     
     def _compute_radial_profile(self, spectrum: np.ndarray) -> np.ndarray:
         """Compute radial frequency profile"""

@@ -3,7 +3,6 @@ from dataclasses import dataclass, field
 from typing import Tuple, Dict, Optional
 from datetime import datetime
 
-
 @dataclass
 class Config:
     """Configuration for HSGSP pruning method"""
@@ -87,14 +86,16 @@ class Config:
     mixup_prob: float = 0.5
 
     # ========== HYBRID BASELINE CONFIGURATION ==========
-    hybrid_iterations: int = 20
+    hybrid_iterations: int = 20 # AnFix 
+    # hybrid_iterations: int = 2
     hybrid_prune_fraction: float = 0.07
     hybrid_alpha: float = 0.5
     hybrid_kappa_beta: float = 0.1
     hybrid_initial_kappa_ratio: float = 0.5
     hybrid_mode: str = 'original'  # 'frequency' or 'original'
     hybrid_min_filters: int = 8
-    hybrid_finetune_epochs: int = 20
+    hybrid_finetune_epochs: int = 20 # AnFix
+    # hybrid_finetune_epochs: int = 2
     hybrid_warmup_epochs: int = 0
     hybrid_warmup_lr: float = 2e-4
     hybrid_regrow_fraction: float = 0.15 # 0.15 by default

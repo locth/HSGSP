@@ -1,8 +1,11 @@
-# training/evaluator.py
-import tensorflow as tf
+import torch
+import torch.nn as nn
 import numpy as np
-from typing import Dict, Tuple, Optional
+from typing import Dict, Optional
 import time
+from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
+
+from models.model_utils import ModelUtils
 
 class ModelEvaluator:
     """Comprehensive model evaluation"""
@@ -11,43 +14,57 @@ class ModelEvaluator:
         self.config = config
     
     def evaluate_model(self, 
-                      model: tf.keras.Model,
-                      dataset: tf.data.Dataset,
+                      model: torch.nn.Module,
+                      dataloader: torch.utils.data.DataLoader,
                       dataset_name: str = "") -> Dict:
         """Model evaluation"""
         print(f"\nEvaluating model on {dataset_name}...")
 
-        # Ensure compiled for metrics (no training impact)
-        opt = getattr(model, "optimizer", None) or tf.keras.optimizers.SGD()
-        loss = getattr(model, "loss", None) or "categorical_crossentropy"
-        model.compile(
-            optimizer=opt,
-            loss=loss,
-            metrics=["accuracy", tf.keras.metrics.TopKCategoricalAccuracy(k=5, name="top5_acc")],
-        )
-        
-        # Basic metrics
-        # loss, accuracy = model.evaluate(dataset, verbose=1)
-        loss, accuracy, top5_acc = model.evaluate(dataset, verbose=1)
-        
-        # Per-class metrics
-        class_metrics = self._compute_per_class_metrics(model, dataset)
-        
-        # Inference speed
-        inference_time = self._measure_inference_speed(model, dataset)
-        
-        # Model complexity
+        model.eval()
+        total_loss = 0
+        total_correct = 0
+        total_top5_correct = 0
+        total_samples = 0
+        all_predictions = []
+        all_labels = []
+        criterion = nn.CrossEntropyLoss()
+        device = next(model.parameters()).device
+
+        with torch.no_grad():
+            for inputs, labels in dataloader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                total_loss += loss.item() * inputs.size(0)
+                _, preds = torch.max(outputs, 1)
+                total_correct += torch.sum(preds == labels).item()
+                _, top5_preds = torch.topk(outputs, 5, dim=1)
+                total_top5_correct += sum(1 for i in range(labels.size(0)) if labels[i] in top5_preds[i])
+                total_samples += inputs.size(0)
+                all_predictions.extend(preds.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+
+        avg_loss = total_loss / total_samples
+        accuracy = total_correct / total_samples
+        top5_accuracy = total_top5_correct / total_samples
+
+        precision, recall, f1, _ = precision_recall_fscore_support(all_labels, all_predictions, average='macro')
+        confusion = confusion_matrix(all_labels, all_predictions)
+        per_class_acc = np.diag(confusion) / confusion.sum(axis=1)
+
+        inference_time = self._measure_inference_speed(model, dataloader)
+
         complexity_metrics = self._compute_model_complexity(model)
-        
+
         results = {
             'dataset': dataset_name,
-            'loss': loss,
+            'loss': avg_loss,
             'accuracy': accuracy,
-            'top5_accuracy': top5_acc,
-            'per_class_accuracy': class_metrics['per_class_acc'],
-            'precision': class_metrics['precision'],
-            'recall': class_metrics['recall'],
-            'f1_score': class_metrics['f1'],
+            'top5_accuracy': top5_accuracy,
+            'per_class_accuracy': per_class_acc,
+            'precision': precision,
+            'recall': recall,
+            'f1_score': f1,
             'inference_time_ms': inference_time,
             'model_size_mb': complexity_metrics['size_mb'],
             'total_params': complexity_metrics['total_params'],
@@ -55,65 +72,39 @@ class ModelEvaluator:
         }
         
         return results
-    
-    def _compute_per_class_metrics(self, 
-                                  model: tf.keras.Model,
-                                  dataset: tf.data.Dataset) -> Dict:
-        """Compute per-class metrics"""
-        all_predictions = []
-        all_labels = []
-        
-        for x_batch, y_batch in dataset:
-            predictions = model.predict(x_batch, verbose=0)
-            all_predictions.append(np.argmax(predictions, axis=1))
-            all_labels.append(np.argmax(y_batch, axis=1))
-        
-        all_predictions = np.concatenate(all_predictions)
-        all_labels = np.concatenate(all_labels)
-        
-        # Compute metrics
-        from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
-        
-        precision, recall, f1, _ = precision_recall_fscore_support(
-            all_labels, all_predictions, average='macro'
-        )
-        
-        # Per-class accuracy
-        confusion = confusion_matrix(all_labels, all_predictions)
-        per_class_acc = np.diag(confusion) / confusion.sum(axis=1)
-        
-        return {
-            'per_class_acc': per_class_acc,
-            'precision': precision,
-            'recall': recall,
-            'f1': f1,
-            'confusion_matrix': confusion
-        }
-    
+
     def _measure_inference_speed(self, 
-                                model: tf.keras.Model,
-                                dataset: tf.data.Dataset,
+                                model: torch.nn.Module,
+                                dataloader: torch.utils.data.DataLoader,
                                 num_samples: int = 100) -> float:
         """Measure average inference time"""
         times = []
         batches_to_take = max(1, int(np.ceil(num_samples / float(self.config.batch_size))))
         warmup_batches = min(5, batches_to_take)
+        device = next(model.parameters()).device
 
-        batch_iterator = dataset.take(warmup_batches + batches_to_take)
+        batch_iterator = iter(dataloader)
         measured_batches = 0
 
-        for idx, (x_batch, _) in enumerate(batch_iterator):
-            if x_batch.shape[0] == 0:
+        for idx in range(warmup_batches + batches_to_take):
+            try:
+                x_batch, _ = next(batch_iterator)
+            except StopIteration:
+                break
+            x_batch = x_batch.to(device)
+            if x_batch.size(0) == 0:
                 continue
             if idx < warmup_batches:
-                _ = model(x_batch, training=False)
+                with torch.no_grad():
+                    _ = model(x_batch)
                 continue
 
             start_time = time.perf_counter()
-            _ = model(x_batch, training=False)
+            with torch.no_grad():
+                _ = model(x_batch)
             end_time = time.perf_counter()
             batch_time_ms = (end_time - start_time) * 1000.0
-            per_sample_ms = batch_time_ms / float(x_batch.shape[0])
+            per_sample_ms = batch_time_ms / float(x_batch.size(0))
             times.append(per_sample_ms)
             measured_batches += 1
             if measured_batches >= batches_to_take:
@@ -121,16 +112,15 @@ class ModelEvaluator:
 
         return float(np.mean(times)) if times else 0.0
     
-    def _compute_model_complexity(self, model: tf.keras.Model) -> Dict:
+    def _compute_model_complexity(self, model: torch.nn.Module) -> Dict:
         """Compute model complexity metrics"""
         # Count parameters
-        total_params = model.count_params()
+        total_params = sum(p.numel() for p in model.parameters())
         
         # Estimate model size
         size_mb = total_params * 4 / (1024 * 1024)  # Assuming float32
         
         # Estimate FLOPs
-        from models.model_utils import ModelUtils
         flops = ModelUtils.compute_flops(model)
         
         return {
@@ -140,98 +130,88 @@ class ModelEvaluator:
         }
 
     def benchmark_inference(self,
-                            model: tf.keras.Model,
+                            model: torch.nn.Module,
                             batch_size: int = 1,
                             warmup_runs: int = 20,
                             measure_runs: int = 100,
-                            dataset: Optional[tf.data.Dataset] = None,
-                            dtype: tf.dtypes.DType = tf.float32) -> Dict[str, float]:
-        """High-resolution inference benchmark with optional dataset input."""
-        if not hasattr(model, 'input_shape'):
-            raise ValueError("Model must have a defined input shape for benchmarking.")
-
-        if dataset is not None:
-            ds_iter = iter(dataset)
-            try:
-                sample_batch = next(ds_iter)[0]
-            except (StopIteration, TypeError):
-                raise ValueError("Dataset must yield (inputs, labels) tuples with non-empty batches.")
-            inputs = tf.convert_to_tensor(sample_batch[:batch_size])
+                            dataloader: Optional[torch.utils.data.DataLoader] = None,
+                            dtype: torch.dtype = torch.float32) -> Dict[str, float]:
+        """High-resolution inference benchmark with optional dataloader input."""
+        device = next(model.parameters()).device
+        if dataloader is not None:
+            ds_iter = iter(dataloader)
+            sample_batch = next(ds_iter)[0][:batch_size].to(device, dtype=dtype)
         else:
-            input_shape = model.input_shape
-            if isinstance(input_shape, list):
-                input_shape = input_shape[0]
-            if input_shape[0] is None:
-                shape = (batch_size,) + tuple(input_shape[1:])
-            else:
-                shape = (batch_size,) + tuple(input_shape[1:])
-            inputs = tf.random.normal(shape, dtype=dtype)
+            input_shape = (batch_size, 3, 32, 32)
+            sample_batch = torch.randn(input_shape).to(device, dtype=dtype)
 
-        infer_fn = tf.function(model, autograph=False)
-        _ = infer_fn(inputs, training=False)
-
-        for _ in range(max(0, warmup_runs)):
-            _ = infer_fn(inputs, training=False)
+        # Warmup
+        model.eval()
+        with torch.no_grad():
+            for _ in range(max(0, warmup_runs)):
+                _ = model(sample_batch)
 
         timings = []
         for _ in range(max(1, measure_runs)):
             start = time.perf_counter()
-            _ = infer_fn(inputs, training=False)
+            with torch.no_grad():
+                _ = model(sample_batch)
             end = time.perf_counter()
             timings.append((end - start) * 1000.0)
 
         batch_latency_ms = float(np.mean(timings))
-        per_sample_ms = batch_latency_ms / max(1, inputs.shape[0])
+        per_sample_ms = batch_latency_ms / max(1, sample_batch.size(0))
         throughput = 1000.0 / per_sample_ms if per_sample_ms > 0 else float('inf')
 
         return {
             'batch_latency_ms': batch_latency_ms,
             'per_sample_latency_ms': per_sample_ms,
             'throughput_samples_per_sec': throughput,
-            'batch_size': int(inputs.shape[0])
+            'batch_size': int(sample_batch.size(0))
         }
 
     def estimate_accuracy(self,
-                          model: tf.keras.Model,
-                          dataset: tf.data.Dataset,
+                          model: torch.nn.Module,
+                          dataloader: torch.utils.data.DataLoader,
                           max_batches: Optional[int] = None) -> Dict[str, float]:
         """Estimate loss/accuracy on (optionally truncated) dataset."""
         if max_batches is not None and max_batches > 0:
-            dataset = dataset.take(max_batches)
+            dataloader = list(dataloader)[:max_batches]
+            dataloader = torch.utils.data.DataLoader(dataloader, batch_size=self.config.batch_size)
 
-        opt = getattr(model, "optimizer", None) or tf.keras.optimizers.SGD()
-        loss = getattr(model, "loss", None) or "categorical_crossentropy"
-        model.compile(
-            optimizer=opt,
-            loss=loss,
-            metrics=["accuracy"],
-        )
+        model.eval()
+        total_loss = 0
+        total_correct = 0
+        total_samples = 0
+        criterion = nn.CrossEntropyLoss()
+        device = next(model.parameters()).device
 
-        results = model.evaluate(dataset, verbose=0)
-        metrics_names = model.metrics_names or []
+        with torch.no_grad():
+            for inputs, labels in dataloader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                total_loss += loss.item() * inputs.size(0)
+                _, preds = torch.max(outputs, 1)
+                total_correct += torch.sum(preds == labels).item()
+                total_samples += inputs.size(0)
 
-        if isinstance(results, (list, tuple)):
-            metrics_map = {
-                name: float(results[idx])
-                for idx, name in enumerate(metrics_names[:len(results)])
-            }
-        else:
-            key = metrics_names[0] if metrics_names else 'loss'
-            metrics_map = {key: float(results)}
+        avg_loss = total_loss / total_samples
+        accuracy = total_correct / total_samples
 
-        return metrics_map
+        return {'loss': avg_loss, 'accuracy': accuracy}
     
     def compare_models(self,
-                      original_model: tf.keras.Model,
-                      pruned_model: tf.keras.Model,
-                      dataset: tf.data.Dataset,
+                      original_model: torch.nn.Module,
+                      pruned_model: torch.nn.Module,
+                      dataloader: torch.utils.data.DataLoader,
                       dataset_name: str = "") -> Dict:
         """Compare original and pruned models"""
         print(f"\nComparing models on {dataset_name}...")
         
         # Evaluate both models
-        original_results = self.evaluate_model(original_model, dataset, f"{dataset_name} (Original)")
-        pruned_results = self.evaluate_model(pruned_model, dataset, f"{dataset_name} (Pruned)")
+        original_results = self.evaluate_model(original_model, dataloader, f"{dataset_name} (Original)")
+        pruned_results = self.evaluate_model(pruned_model, dataloader, f"{dataset_name} (Pruned)")
         
         # Compute improvements
         comparison = {

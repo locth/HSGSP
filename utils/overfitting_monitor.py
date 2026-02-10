@@ -1,8 +1,7 @@
-# utils/overfitting_monitor.py
 import numpy as np
-from typing import Dict, List, Tuple
+import torch.nn as nn
+from typing import Dict, List
 import matplotlib.pyplot as plt
-import tensorflow as tf
 
 class OverfittingMonitor:
     """Monitor and detect overfitting during training"""
@@ -140,7 +139,7 @@ class OverfittingMonitor:
             plt.savefig(save_path)
             plt.close()
         else:
-            plt.show()
+            plt.close()
 
 
 class AdaptiveRegularization:
@@ -187,17 +186,16 @@ class AdaptiveRegularization:
         self.history.append(self.current_dropout)
         return self.current_dropout
     
-    def update_model_dropout(self, model: tf.keras.Model, new_rate: float):
+    def update_model_dropout(self, model: nn.Module, new_rate: float):
         """
         Update dropout rates in the model
         
         Args:
-            model: Keras model
+            model: PyTorch model
             new_rate: New dropout rate
         """
-        for layer in model.layers:
-            if isinstance(layer, tf.keras.layers.Dropout):
-                layer.rate = new_rate
-            elif isinstance(layer, tf.keras.layers.SpatialDropout2D):
-                layer.rate = new_rate * 0.5  # Use half rate for spatial dropout
-
+        for module in model.modules():
+            if isinstance(module, nn.Dropout):
+                module.p = new_rate
+            elif isinstance(module, nn.Dropout2d):
+                module.p = new_rate * 0.5  # Use half rate for spatial dropout

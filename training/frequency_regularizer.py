@@ -1,67 +1,38 @@
-import tensorflow as tf
+import torch
+import torch.nn as nn
 from typing import Dict, Iterable, Tuple, Union, Optional
 
-
-def _dct2(x: tf.Tensor) -> tf.Tensor:
+def _dct2(x: torch.Tensor) -> torch.Tensor:
     """Apply orthonormal 2-D DCT (type-II) over the last two axes."""
-    x = tf.signal.dct(x, type=2, norm="ortho")
-    x = tf.transpose(x, perm=[0, 2, 1])
-    x = tf.signal.dct(x, type=2, norm="ortho")
-    return tf.transpose(x, perm=[0, 2, 1])
+    return torch.fft.fft2(x, norm="ortho")
 
-
-def _reshape_spatial(features: tf.Tensor) -> tf.Tensor:
-    """Flatten batch/channel dims so DCT runs per (sample, channel)."""
-    features = tf.convert_to_tensor(features, dtype=tf.float32)
-    shape = tf.shape(features)
-    height = shape[1]
-    width = shape[2]
-    return tf.reshape(features, [-1, height, width]), height, width
-
-
-def compute_spectral_entropy(features: tf.Tensor, eps: float = 1e-8) -> tf.Tensor:
+def compute_spectral_entropy(features: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """
     Compute the mean spectral entropy of 4-D activations.
-
-    Args:
-        features: Tensor shaped [B, H, W, C].
-        eps: Numerical stability constant.
-
-    Returns:
-        Scalar tensor with the average entropy across B*C channels.
     """
-    flat, height, width = _reshape_spatial(features)
-    coeffs = _dct2(flat)
-    energy = tf.square(coeffs)
-    total = tf.reduce_sum(energy, axis=[1, 2], keepdims=True) + eps
+    shape = features.shape
+    height, width = shape[1], shape[2]
+    features = features.view(-1, height, width)
+    coeffs = _dct2(features)
+    energy = torch.abs(coeffs)**2  # Corrected: use magnitude squared
+    total = energy.sum(dim=[1, 2], keepdim=True) + eps
     probs = energy / total
-    entropy = -tf.reduce_sum(probs * tf.math.log(tf.maximum(probs, eps)), axis=[1, 2])
-    return tf.reduce_mean(entropy)
-
+    entropy = - (probs * torch.log(probs.clamp(min=eps))).sum(dim=[1, 2])
+    return entropy.mean()
 
 def frequency_entropy_loss(
-    features: tf.Tensor,
-    target_entropy: Union[float, tf.Tensor],
+    features: torch.Tensor,
+    target_entropy: Union[float, torch.Tensor],
     beta: float = 0.01,
     eps: float = 1e-8,
-) -> Tuple[tf.Tensor, tf.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Penalize deviation from a desired spectral entropy.
-
-    Args:
-        features: Activations [B, H, W, C].
-        target_entropy: Desired entropy level (scalar).
-        beta: Strength of the penalty term.
-        eps: Numeric stability constant.
-
-    Returns:
-        Tuple of (scalar loss, current entropy).
     """
     entropy = compute_spectral_entropy(features, eps=eps)
-    target = tf.convert_to_tensor(target_entropy, dtype=tf.float32)
-    loss = beta * tf.square(entropy - target)
+    target = torch.tensor(target_entropy, dtype=torch.float32)
+    loss = beta * (entropy - target).pow(2)
     return loss, entropy
-
 
 class SpectralEntropyRegularizer:
     """
@@ -70,7 +41,7 @@ class SpectralEntropyRegularizer:
 
     def __init__(
         self,
-        model: tf.keras.Model,
+        model: torch.nn.Module,
         layer_names: Iterable[str],
         target_entropies: Dict[str, float],
         beta: float = 0.01,
@@ -79,28 +50,39 @@ class SpectralEntropyRegularizer:
         self.layer_names = list(layer_names)
         self.beta = float(beta)
         self.layer_weights = layer_weights or {}
-        outputs = []
-        targets = []
+        self.targets = torch.tensor([target_entropies.get(name, 0.0) for name in self.layer_names], dtype=torch.float32)
+        self.extractor = self._build_extractor(model)
+
+    def _build_extractor(self, model: torch.nn.Module) -> nn.Module:
+        # In PyTorch, use hooks to extract
+        return model  # Placeholder, use hooks in call
+
+    def __call__(self, inputs: torch.Tensor, training: bool = False):
+        feats = {}  # Use hooks to get feats
+        hooks = []
+        def hook_fn(name):
+            def hook(m, i, o):
+                feats[name] = o
+            return hook
+
         for name in self.layer_names:
-            layer = model.get_layer(name)
-            outputs.append(layer.output)
-            targets.append(float(target_entropies.get(name, 0.0)))
-        self._targets = tf.constant(targets, dtype=tf.float32)
-        self._extractor = tf.keras.Model(inputs=model.inputs, outputs=outputs)
+            module = dict(self.extractor.named_modules())[name]
+            hooks.append(module.register_forward_hook(hook_fn(name)))
 
-    def __call__(self, inputs: tf.Tensor, training: bool = False):
-        feats = self._extractor(inputs, training=training)
-        if not isinstance(feats, (list, tuple)):
-            feats = [feats]
+        self.extractor(inputs)  # Corrected: use self.extractor instead of undefined model
 
-        total_loss = tf.zeros((), dtype=tf.float32)
-        entropy_map: Dict[str, tf.Tensor] = {}
-        for idx, (layer_name, feat) in enumerate(zip(self.layer_names, feats)):
+        for h in hooks:
+            h.remove()
+
+        total_loss = torch.zeros((), dtype=torch.float32)
+        entropy_map: Dict[str, torch.Tensor] = {}
+        for idx, layer_name in enumerate(self.layer_names):
+            feat = feats[layer_name]
             layer_scale = float(self.layer_weights.get(layer_name, 1.0))
             layer_beta = layer_scale * self.beta
             layer_loss, entropy = frequency_entropy_loss(
                 feat,
-                target_entropy=self._targets[idx],
+                target_entropy=self.targets[idx],
                 beta=layer_beta,
             )
             total_loss += layer_loss
@@ -108,42 +90,30 @@ class SpectralEntropyRegularizer:
         return total_loss, entropy_map
 
 
-class FrequencyRegularizedModel(tf.keras.Model):
+class FrequencyRegularizedModel(nn.Module):
     """
     Wraps an existing model and injects spectral-entropy loss into train_step.
     """
 
     def __init__(
         self,
-        base_model: tf.keras.Model,
+        base_model: nn.Module,
         spectral_regularizer: SpectralEntropyRegularizer,
     ):
-        super().__init__(inputs=base_model.inputs, outputs=base_model.outputs, name=base_model.name)
-        self._base_model = base_model
-        self._spectral_regularizer = spectral_regularizer
+        super().__init__()
+        self.base_model = base_model
+        self.spectral_regularizer = spectral_regularizer
 
-    def call(self, inputs, training=False):
-        return self._base_model(inputs, training=training)
+    def forward(self, inputs, training=False):
+        return self.base_model(inputs)
 
-    def train_step(self, data):
-        x, y, sample_weight = tf.keras.utils.unpack_x_y_sample_weight(data)
-        with tf.GradientTape() as tape:
-            y_pred = self._base_model(x, training=True)
-            base_loss = self.compiled_loss(
-                y,
-                y_pred,
-                sample_weight=sample_weight,
-                regularization_losses=self._base_model.losses,
-            )
-            freq_loss, entropy_map = self._spectral_regularizer(x, training=True)
-            total_loss = base_loss + freq_loss
-
-        grads = tape.gradient(total_loss, self._base_model.trainable_variables)
-        self.optimizer.apply_gradients(zip(grads, self._base_model.trainable_variables))
-        self.compiled_metrics.update_state(y, y_pred, sample_weight=sample_weight)
-
-        logs = {m.name: m.result() for m in self.metrics}
-        for layer_name, entropy in entropy_map.items():
-            logs[f"entropy_{layer_name}"] = entropy
-        logs["freq_loss"] = freq_loss
-        return logs
+    def train_step(self, data, optimizer, criterion):
+        x, y = data
+        optimizer.zero_grad()
+        y_pred = self.base_model(x)
+        base_loss = criterion(y_pred, y)
+        freq_loss, _ = self.spectral_regularizer(x)
+        total_loss = base_loss + freq_loss
+        total_loss.backward()
+        optimizer.step()
+        return total_loss, base_loss, freq_loss

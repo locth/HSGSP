@@ -1,6 +1,8 @@
+import copy
 import numpy as np
-import tensorflow as tf
-from typing import Dict, List, Tuple, Optional, Set, Callable, Any
+import torch 
+import torch.nn as nn
+from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 
 @dataclass
@@ -17,12 +19,12 @@ class PruningStrategy:
     """
     Implements various pruning strategies for HSGSP
     """
-    
+
     def __init__(self, config):
         self.config = config
         self.min_filters_per_layer = int(getattr(config, "hybrid_min_filters", 8))
         self.pruning_schedule = self._create_pruning_schedule()
-    
+
     def _create_pruning_schedule(self) -> Dict[str, float]:
         """
         Create layer-wise pruning schedule
@@ -33,7 +35,7 @@ class PruningStrategy:
             'middle': 0.6,  # Keep 60% in middle layers
             'late': 0.5,    # Keep 50% in late layers (can prune more)
         }
-    
+
     def compute_layer_importance(self, 
                                 layer_name: str,
                                 layer_position: float) -> float:
@@ -53,11 +55,11 @@ class PruningStrategy:
             return self.pruning_schedule['middle']
         else:
             return self.pruning_schedule['late']
-    
+
     def select_filters_structured(self,
                                  importance_scores: Dict[str, np.ndarray],
                                  target_pruning_ratio: float,
-                                 model: tf.keras.Model) -> Dict[str, LayerPruningConfig]:
+                                 model: torch.nn.Module) -> Dict[str, LayerPruningConfig]:
         """
         Select filters to prune using structured pruning
         
@@ -74,22 +76,25 @@ class PruningStrategy:
         total_to_prune = 0
         
         # Get total layer count for position calculation
-        conv_layers = [l for l in model.layers 
-                      if isinstance(l, tf.keras.layers.Conv2D)]
+        conv_layers = [l for name, l in model.named_modules() 
+                      if isinstance(l, torch.nn.Conv2d)]
         num_layers = len(conv_layers)
         
-        for idx, layer in enumerate(conv_layers):
-            if layer.name not in importance_scores:
+        for idx, (name, layer) in enumerate(model.named_modules()):
+            if not isinstance(layer, torch.nn.Conv2d):
                 continue
             
-            scores = importance_scores[layer.name]
+            scores = importance_scores.get(name)
+            if scores is None:
+                continue
+            
             num_filters = len(scores)
             total_filters += num_filters
             
             # Compute layer-specific pruning ratio
             layer_position = idx / max(num_layers - 1, 1)
             layer_importance = self.compute_layer_importance(
-                layer.name, layer_position
+                name, layer_position
             )
             
             # Adjust pruning ratio based on layer importance
@@ -117,7 +122,7 @@ class PruningStrategy:
                 mask = np.ones(num_filters, dtype=bool)
             
             config = LayerPruningConfig(
-                layer_name=layer.name,
+                layer_name=name,
                 original_filters=num_filters,
                 filters_to_keep=filters_to_keep,
                 pruning_ratio=filters_to_prune / num_filters,
@@ -125,7 +130,7 @@ class PruningStrategy:
                 mask=mask
             )
             
-            pruning_configs[layer.name] = config
+            pruning_configs[name] = config
         
         # Log pruning statistics
         actual_pruning_ratio = total_to_prune / max(total_filters, 1)
@@ -170,8 +175,8 @@ class PruningStrategy:
         return masks
     
     def apply_structured_pruning(self,
-                                model: tf.keras.Model,
-                                pruning_configs: Dict[str, LayerPruningConfig]) -> tf.keras.Model:
+                                model: torch.nn.Module,
+                                pruning_configs: Dict[str, LayerPruningConfig]) -> torch.nn.Module:
         """
         Apply structured pruning with channel-consistency across layers.
 
@@ -179,7 +184,7 @@ class PruningStrategy:
         - Propagates the kept-channel mask forward to slice the next Conv2D's
           input channels accordingly.
         - Adjusts following BatchNormalization parameters.
-        - Adapts Dense input weights when preceded by GlobalAveragePooling2D
+        - Adapts Dense input weights when preceded by AdaptiveAvgPool2d
           (common in this repo's VGG models).
 
         Args:
@@ -189,156 +194,63 @@ class PruningStrategy:
         Returns:
             A new pruned model with compatible shapes and copied weights.
         """
+        pruned_model = copy.deepcopy(model)
+        current_mask = None
 
-        def clone_layer(layer: tf.keras.layers.Layer, name: Optional[str] = None) -> tf.keras.layers.Layer:
-            cfg = layer.get_config()
-            if name is not None:
-                cfg['name'] = name
-            return layer.__class__.from_config(cfg)
-
-        def clone_conv_with_filters(layer: tf.keras.layers.Conv2D, new_filters: int, name: Optional[str] = None) -> tf.keras.layers.Conv2D:
-            cfg = layer.get_config()
-            cfg['filters'] = int(new_filters)
-            if name is not None:
-                cfg['name'] = name
-            return tf.keras.layers.Conv2D.from_config(cfg)
-
-        def clone_bn(layer: tf.keras.layers.BatchNormalization, name: Optional[str] = None) -> tf.keras.layers.BatchNormalization:
-            cfg = layer.get_config()
-            if name is not None:
-                cfg['name'] = name
-            return tf.keras.layers.BatchNormalization.from_config(cfg)
-
-        inputs = model.inputs if isinstance(model.inputs, list) else [model.input]
-        if len(inputs) != 1:
-            raise ValueError("apply_structured_pruning currently supports single-input models.")
-
-        x = inputs[0]
-        current_channel_mask: Optional[np.ndarray] = None  # mask over channels for the current tensor
-
-        # Walk through layers and rebuild
-        for layer in model.layers[1:]:  # skip input layer
-            # Handle Conv2D with potential pruning and/or input-channel slicing
-            if isinstance(layer, tf.keras.layers.Conv2D):
-                cfg = pruning_configs.get(layer.name)
-
-                # Determine output channel mask for this conv
-                if cfg is not None:
-                    out_mask = cfg.mask.astype(bool)
-                    new_filters = int(np.sum(out_mask))
+        modules = list(pruned_model.named_modules())
+        for idx, (name, module) in enumerate(modules):
+            if isinstance(module, nn.Conv2d):
+                config = pruning_configs.get(name)
+                if config is not None:
+                    out_mask = config.mask
+                    new_out_channels = int(np.sum(out_mask))
                 else:
                     out_mask = None
-                    new_filters = int(layer.filters)
+                    new_out_channels = module.out_channels
 
-                # Create new conv (built by calling on current tensor)
-                new_conv = clone_conv_with_filters(layer, new_filters, name=layer.name)
-                y = new_conv(x)
+                if current_mask is not None:
+                    module.in_channels = int(np.sum(current_mask))
+                    weight = module.weight.data
+                    weight = weight[:, current_mask, :, :]
+                    module.weight.data = weight
 
-                # Slice and set weights
-                w_and_b = layer.get_weights()
-                if len(w_and_b) == 2:
-                    W, b = w_and_b
-                else:
-                    W = w_and_b[0]
-                    b = None
-
-                # W shape [kh, kw, Cin, Cout]
-                kh, kw, Cin, Cout = W.shape
-                # Input slicing if a previous conv pruned its outputs
-                if current_channel_mask is not None:
-                    in_mask = current_channel_mask.astype(bool)
-                    W = W[:, :, in_mask, :]
-                # Output slicing if this conv is pruned
                 if out_mask is not None:
-                    W = W[:, :, :, out_mask]
-                    if b is not None:
-                        b = b[out_mask]
-
-                # Set weights
-                if b is not None and new_conv.use_bias:
-                    new_conv.set_weights([W, b])
+                    module.out_channels = new_out_channels
+                    weight = module.weight.data
+                    weight = weight[out_mask, :, :, :]
+                    module.weight.data = weight
+                    if module.bias is not None:
+                        bias = module.bias.data
+                        bias = bias[out_mask]
+                        module.bias.data = bias
+                    current_mask = out_mask
                 else:
-                    new_conv.set_weights([W])
+                    current_mask = np.ones(module.out_channels, dtype=bool)
+            elif isinstance(module, nn.BatchNorm2d):
+                if current_mask is not None:
+                    module.num_features = int(np.sum(current_mask))
+                    if module.running_mean is not None:
+                        module.running_mean = module.running_mean[current_mask]
+                    if module.running_var is not None:
+                        module.running_var = module.running_var[current_mask]
+                    if module.weight is not None:
+                        module.weight.data = module.weight.data[current_mask]
+                    if module.bias is not None:
+                        module.bias.data = module.bias.data[current_mask]
+            elif isinstance(module, nn.Linear):
+                if current_mask is not None:
+                    module.in_features = int(np.sum(current_mask))
+                    weight = module.weight.data
+                    weight = weight[:, current_mask]
+                    module.weight.data = weight
+                    current_mask = None
 
-                x = y
-                # Update the channel mask to this conv's outputs
-                if out_mask is not None:
-                    current_channel_mask = out_mask
-                else:
-                    # No pruning on this layer: outputs are all channels
-                    current_channel_mask = np.ones(new_filters, dtype=bool)
-                continue
-
-            # BatchNorm: slice parameters to match current channel mask
-            if isinstance(layer, tf.keras.layers.BatchNormalization):
-                new_bn = clone_bn(layer, name=layer.name)
-                y = new_bn(x)
-                # Copy/maybe-slice weights
-                bn_weights = layer.get_weights()
-                if len(bn_weights) == 4 and current_channel_mask is not None:
-                    m = current_channel_mask.astype(bool)
-                    gamma, beta, moving_mean, moving_var = bn_weights
-                    gamma = gamma[m]
-                    beta = beta[m]
-                    moving_mean = moving_mean[m]
-                    moving_var = moving_var[m]
-                    new_bn.set_weights([gamma, beta, moving_mean, moving_var])
-                elif len(bn_weights) == 4:
-                    new_bn.set_weights(bn_weights)
-                x = y
-                continue
-
-            # GlobalAveragePooling2D: preserve mask (channels collapse to features)
-            if isinstance(layer, tf.keras.layers.GlobalAveragePooling2D):
-                new_gap = clone_layer(layer, name=layer.name)
-                x = new_gap(x)
-                # Mask remains over feature channels (length = C)
-                continue
-
-            # Flatten: if needed, we'd have to expand mask to H*W*C; not used in VGG here
-            if isinstance(layer, tf.keras.layers.Flatten):
-                new_flat = clone_layer(layer, name=layer.name)
-                x = new_flat(x)
-                # Cannot reliably expand channel mask without known H,W; drop mask
-                current_channel_mask = None
-                continue
-
-            # Dense: slice input dimension if we have a channel/feature mask (e.g., after GAP)
-            if isinstance(layer, tf.keras.layers.Dense):
-                new_dense = clone_layer(layer, name=layer.name)
-                y = new_dense(x)
-
-                dense_weights = layer.get_weights()
-                if len(dense_weights) == 2:
-                    W, b = dense_weights
-                else:
-                    W, b = dense_weights[0], None
-
-                if current_channel_mask is not None:
-                    m = current_channel_mask.astype(bool)
-                    W = W[m, :]
-                # Set weights
-                if b is not None and new_dense.use_bias:
-                    new_dense.set_weights([W, b])
-                else:
-                    new_dense.set_weights([W])
-
-                x = y
-                # After Dense, we no longer track a channel mask
-                current_channel_mask = None
-                continue
-
-            # Layers without weights or unaffected by channel count
-            new_generic = clone_layer(layer, name=layer.name)
-            x = new_generic(x)
-
-        pruned_model = tf.keras.Model(inputs=inputs[0], outputs=x, name=f"{model.name}_pruned")
         return pruned_model
 
     def prune_model_structured(self,
-                               model: tf.keras.Model,
+                               model: torch.nn.Module,
                                layer_pruning_ratios: Dict[str, float],
-                               importance_scores: Dict[str, np.ndarray]) -> Tuple[tf.keras.Model, Dict[str, LayerPruningConfig]]:
+                               importance_scores: Dict[str, np.ndarray]) -> Tuple[torch.nn.Module, Dict]:
         """
         Convenience API: build per-layer configs from provided ratios and scores,
         then apply structured pruning consistently.
@@ -352,300 +264,55 @@ class PruningStrategy:
             (pruned_model, pruning_configs)
         """
         pruning_configs: Dict[str, LayerPruningConfig] = {}
-        for layer in model.layers:
-            if not isinstance(layer, tf.keras.layers.Conv2D):
-                continue
-            name = layer.name
-            if name not in importance_scores:
-                continue
-            scores = importance_scores[name]
-            num_filters = len(scores)
-            ratio = float(layer_pruning_ratios.get(name, 0.0))
-            ratio = float(np.clip(ratio, 0.0, 0.95))
-            keep = max(1, int(round(num_filters * (1.0 - ratio))))
-            # select top-k by importance
-            idx_sorted = np.argsort(scores)
-            keep_idx = idx_sorted[-keep:]
-            mask = np.zeros(num_filters, dtype=bool)
-            mask[keep_idx] = True
-            pruning_configs[name] = LayerPruningConfig(
-                layer_name=name,
-                original_filters=num_filters,
-                filters_to_keep=keep,
-                pruning_ratio=(num_filters - keep) / max(num_filters, 1),
-                importance_scores=scores,
-                mask=mask,
-            )
+        for name, layer in model.named_modules():
+            if isinstance(layer, torch.nn.Conv2d):
+                if name not in importance_scores:
+                    continue
+                scores = importance_scores[name]
+                num_filters = len(scores)
+                ratio = layer_pruning_ratios.get(name, 0.0)
+                ratio = float(np.clip(ratio, 0.0, 0.95))
+                keep = max(1, int(round(num_filters * (1.0 - ratio))))
+                idx_sorted = np.argsort(scores)
+                keep_idx = idx_sorted[-keep:]
+                mask = np.zeros(num_filters, dtype=bool)
+                mask[keep_idx] = True
+                pruning_configs[name] = LayerPruningConfig(
+                    layer_name=name,
+                    original_filters=num_filters,
+                    filters_to_keep=keep,
+                    pruning_ratio=(num_filters - keep) / max(num_filters, 1),
+                    importance_scores=scores,
+                    mask=mask,
+                )
 
         pruned_model = self.apply_structured_pruning(model, pruning_configs)
         return pruned_model, pruning_configs
-    
+
     def compute_pruning_sensitivity(self,
-                                   model: tf.keras.Model,
-                                   dataset: tf.data.Dataset,
-                                   layer_names: List[str],
-                                   sample_ratios: List[float] = [0.1, 0.3, 0.5, 0.7]) -> Dict:
-        """
-        Analyze sensitivity of each layer to pruning
-        
-        Args:
-            model: Model to analyze
-            dataset: Validation dataset
-            layer_names: Layers to test
-            sample_ratios: Pruning ratios to test
-            
-        Returns:
-            Sensitivity analysis results
-        """
-        sensitivity_results = {}
-        
-        # Get baseline accuracy
-        baseline_acc = self._evaluate_accuracy(model, dataset)
-        
-        for layer_name in layer_names:
-            layer_sensitivity = []
-            
-            for ratio in sample_ratios:
-                # Create temporary pruned model
-                temp_model = tf.keras.models.clone_model(model)
-                temp_model.set_weights(model.get_weights())
-                
-                # Prune single layer
-                for layer in temp_model.layers:
-                    if layer.name == layer_name and isinstance(layer, tf.keras.layers.Conv2D):
-                        weights = layer.get_weights()
-                        if len(weights) > 0:
-                            # Simple magnitude-based pruning for testing
-                            w = weights[0]
-                            threshold = np.percentile(np.abs(w), ratio * 100)
-                            mask = np.abs(w) > threshold
-                            weights[0] = w * mask
-                            layer.set_weights(weights)
-                
-                # Evaluate accuracy drop
-                pruned_acc = self._evaluate_accuracy(temp_model, dataset)
-                accuracy_drop = baseline_acc - pruned_acc
-                
-                layer_sensitivity.append({
-                    'pruning_ratio': ratio,
-                    'accuracy_drop': accuracy_drop
-                })
-            
-            sensitivity_results[layer_name] = layer_sensitivity
-        
-        return sensitivity_results
-    
-    def _evaluate_accuracy(self, model: tf.keras.Model, dataset: tf.data.Dataset) -> float:
-        """Quick accuracy evaluation"""
-        correct = 0
-        total = 0
-        
-        for x_batch, y_batch in dataset.take(10):  # Quick evaluation
-            predictions = model(x_batch, training=False)
-            predicted_classes = tf.argmax(predictions, axis=1)
-            true_classes = tf.argmax(y_batch, axis=1)
-            correct += tf.reduce_sum(tf.cast(predicted_classes == true_classes, tf.float32))
-            total += x_batch.shape[0]
-        
-        return (correct / total).numpy()
-    
-    def iterative_pruning(self,
-                         model: tf.keras.Model,
-                         importance_scores: Dict[str, np.ndarray],
-                         target_ratio: float,
-                         num_iterations: int = 5) -> tf.keras.Model:
-        """
-        Apply pruning iteratively (gradual pruning)
-        
-        Args:
-            model: Model to prune
-            importance_scores: Filter importance scores
-            target_ratio: Final target pruning ratio
-            num_iterations: Number of pruning iterations
-            
-        Returns:
-            Iteratively pruned model
-        """
-        current_model = model
-        ratio_per_iteration = target_ratio / num_iterations
-        
-        for iteration in range(num_iterations):
-            print(f"Pruning iteration {iteration + 1}/{num_iterations}")
-            
-            # Compute current pruning ratio
-            current_ratio = ratio_per_iteration * (iteration + 1)
-            
-            # Apply pruning
-            pruning_configs = self.select_filters_structured(
-                importance_scores, 
-                ratio_per_iteration,
-                current_model
-            )
-            
-            current_model = self.apply_structured_pruning(
-                current_model, 
-                pruning_configs
-            )
-            
-            # Optional: Fine-tune between iterations
-            # This would require access to training data
-        
-        return current_model
-
-    def iterative_prune_and_regrow(self,
-                                   model: tf.keras.Model,
-                                   base_layer_pruning_ratios: Dict[str, float],
-                                   compute_importance_scores: Callable[[tf.keras.Model], Dict[str, np.ndarray]],
-                                   iterations: int = 3,
-                                   regrowth_fn: Optional[Callable[[tf.keras.Model,
-                                                                   int,
-                                                                   Dict[str, LayerPruningConfig]], Any]] = None,
-                                   regrowth_kwargs: Optional[Dict[str, Any]] = None,
-                                   initial_importance_scores: Optional[Dict[str, np.ndarray]] = None,
-                                   recompute_scores: bool = True,
-                                   logger: Optional[Callable[[str], None]] = None
-                                   ) -> Tuple[tf.keras.Model, List[Dict[str, Any]]]:
-        """Iteratively prune the model and trigger regrowth between stages.
-
-        Args:
-            model: Model to prune.
-            base_layer_pruning_ratios: Final per-layer pruning ratios (0-1).
-            compute_importance_scores: Callable that returns importance scores for
-                the current model (used before each pruning stage).
-            iterations: Number of prune/regrowth stages.
-            regrowth_fn: Optional callable applied after each pruning stage. It
-                should accept `(model, iteration, pruning_configs, **kwargs)` and
-                return either the updated model or `(model, metrics)`.
-            regrowth_kwargs: Extra keyword arguments forwarded to `regrowth_fn`.
-            initial_importance_scores: Pre-computed importance scores for the
-                first iteration (saves one recomputation).
-            recompute_scores: Whether to re-run `compute_importance_scores` before
-                every pruning step. Set `False` to reuse the previous scores when
-                the architecture does not change.
-            logger: Optional logging function (defaults to `print`).
-
-        Returns:
-            Tuple containing the final pruned (and regrown) model and a list of
-            per-iteration records (pruning summary, optional regrowth metrics,
-            etc.).
-        """
-
-        if iterations <= 0:
-            raise ValueError("iterations must be >= 1")
-
-        log = logger or (lambda msg: print(msg))
-        regrowth_kwargs = regrowth_kwargs or {}
-
-        # Precompute per-layer stage keep factors so the product reaches the final
-        # target ratio after all iterations.
-        per_layer_stage_keep = {}
-        for layer_name, final_ratio in base_layer_pruning_ratios.items():
-            final_ratio = float(np.clip(final_ratio, 0.0, 0.95))
-            final_keep = max(1e-6, 1.0 - final_ratio)
-            stage_keep = final_keep ** (1.0 / iterations)
-            per_layer_stage_keep[layer_name] = stage_keep
-
-        cumulative_keep = {layer: 1.0 for layer in base_layer_pruning_ratios}
-        iteration_records: List[Dict[str, Any]] = []
-
-        current_model = model
-        importance_scores = initial_importance_scores
-
-        for iteration in range(iterations):
-            if importance_scores is None or recompute_scores or iteration == 0:
-                importance_scores = compute_importance_scores(current_model)
-
-            stage_pruning_ratios: Dict[str, float] = {}
-            for layer_name, stage_keep in per_layer_stage_keep.items():
-                if iteration == iterations - 1:
-                    # Adjust final step to hit the requested final ratio.
-                    target_final_keep = max(1e-6, 1.0 - base_layer_pruning_ratios[layer_name])
-                    current_keep = max(1e-6, cumulative_keep.get(layer_name, 1.0))
-                    # Need to prune so that (current_keep * keep_next) == target_final_keep
-                    keep_needed = min(current_keep, target_final_keep) / current_keep
-                    stage_ratio = 1.0 - keep_needed
-                else:
-                    stage_ratio = 1.0 - stage_keep
-
-                stage_pruning_ratios[layer_name] = float(np.clip(stage_ratio, 0.0, 0.95))
-
-            log(f"[Iterative Prune] Stage {iteration + 1}/{iterations} -> applying per-layer ratios")
-            current_model, pruning_configs = self.prune_model_structured(
-                current_model,
-                layer_pruning_ratios=stage_pruning_ratios,
-                importance_scores=importance_scores
-            )
-
-            current_model.summary(print_fn=log)
-
-            summary = self.get_pruning_summary(pruning_configs)
-            log(f"[Iterative Prune] Stage {iteration + 1} summary: "
-                f"overall ratio={summary['overall_pruning_ratio']:.3f}")
-
-            # Update cumulative keep ratios for next iteration.
-            for layer_name, config in pruning_configs.items():
-                keep_fraction = config.filters_to_keep / max(config.original_filters, 1)
-                cumulative_keep[layer_name] = cumulative_keep.get(layer_name, 1.0) * keep_fraction
-
-            stage_record: Dict[str, Any] = {
-                'iteration': iteration,
-                'pruning_configs': pruning_configs,
-                'summary': summary
-            }
-
-            if regrowth_fn is not None:
-                log(f"[Iterative Prune] Starting regrowth for stage {iteration + 1}")
-                regrowth_result = regrowth_fn(
-                    current_model,
-                    iteration,
-                    pruning_configs,
-                    **regrowth_kwargs
-                )
-                if isinstance(regrowth_result, tuple):
-                    current_model = regrowth_result[0]
-                    stage_record['regrowth_metrics'] = regrowth_result[1]
-                else:
-                    current_model = regrowth_result
-
-            iteration_records.append(stage_record)
-
-            # Force recomputation on the next iteration if requested.
-            if recompute_scores:
-                importance_scores = None
-
-        return current_model, iteration_records
-    
-    def get_pruning_summary(self, 
-                          pruning_configs: Dict[str, LayerPruningConfig]) -> Dict:
-        """
-        Generate summary statistics for pruning
-        
-        Args:
-            pruning_configs: Pruning configurations
-            
-        Returns:
-            Summary statistics
-        """
-        total_original = 0
-        total_kept = 0
-        layer_stats = []
-        
-        for layer_name, config in pruning_configs.items():
-            total_original += config.original_filters
-            total_kept += config.filters_to_keep
-            
-            layer_stats.append({
-                'layer': layer_name,
-                'original': config.original_filters,
-                'kept': config.filters_to_keep,
-                'pruned': config.original_filters - config.filters_to_keep,
-                'ratio': config.pruning_ratio
-            })
-        
-        return {
-            'total_filters_original': total_original,
-            'total_filters_kept': total_kept,
-            'total_filters_pruned': total_original - total_kept,
-            'overall_pruning_ratio': (total_original - total_kept) / max(total_original, 1),
-            'layer_statistics': layer_stats
-        }
+                                   model: torch.nn.Module,
+                                   dataloader: torch.utils.data.DataLoader,
+                                   max_batches: int = 5) -> Dict[str, float]:
+        """Estimate per-layer pruning sensitivity by measuring accuracy drop on small pruning."""
+        sensitivities = {}
+        baseline = self.evaluator.estimate_accuracy(model, dataloader)
+        base_acc = baseline.get('accuracy', 0.0)
+        for name, layer in model.named_modules():
+            if isinstance(layer, nn.Conv2d):
+                temp_model = copy.deepcopy(model)
+                temp_layer = dict(temp_model.named_modules())[name]
+                num_filters = temp_layer.out_channels
+                prune_count = max(1, int(num_filters * 0.1))
+                scores = np.random.rand(num_filters)
+                idx_sorted = np.argsort(scores)
+                keep_idx = idx_sorted[prune_count:]
+                mask = np.zeros(num_filters, dtype=bool)
+                mask[keep_idx] = True
+                temp_configs = {name: LayerPruningConfig(
+                    name, num_filters, num_filters - prune_count, 0.1, scores, mask
+                )}
+                temp_pruned = self.apply_structured_pruning(temp_model, temp_configs)
+                pruned_acc = self.evaluator.estimate_accuracy(temp_pruned, dataloader).get('accuracy', 0.0)
+                drop = base_acc - pruned_acc
+                sensitivities[name] = drop
+        return sensitivities
