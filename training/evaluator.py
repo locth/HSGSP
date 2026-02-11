@@ -12,6 +12,7 @@ class ModelEvaluator:
     
     def __init__(self, config):
         self.config = config
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')  # Thêm dòng này
     
     def evaluate_model(self, 
                       model: torch.nn.Module,
@@ -21,6 +22,7 @@ class ModelEvaluator:
         print(f"\nEvaluating model on {dataset_name}...")
 
         model.eval()
+        model.to(self.device)
         total_loss = 0
         total_correct = 0
         total_top5_correct = 0
@@ -28,11 +30,10 @@ class ModelEvaluator:
         all_predictions = []
         all_labels = []
         criterion = nn.CrossEntropyLoss()
-        device = next(model.parameters()).device
 
         with torch.no_grad():
             for inputs, labels in dataloader:
-                inputs, labels = inputs.to(device), labels.to(device)
+                inputs, labels = inputs.to(self.device), labels.to(self.device)
                 outputs = model(inputs)
                 loss = criterion(outputs, labels)
                 total_loss += loss.item() * inputs.size(0)
@@ -81,7 +82,6 @@ class ModelEvaluator:
         times = []
         batches_to_take = max(1, int(np.ceil(num_samples / float(self.config.batch_size))))
         warmup_batches = min(5, batches_to_take)
-        device = next(model.parameters()).device
 
         batch_iterator = iter(dataloader)
         measured_batches = 0
@@ -91,7 +91,7 @@ class ModelEvaluator:
                 x_batch, _ = next(batch_iterator)
             except StopIteration:
                 break
-            x_batch = x_batch.to(device)
+            x_batch = x_batch.to(self.device)
             if x_batch.size(0) == 0:
                 continue
             if idx < warmup_batches:
@@ -137,16 +137,16 @@ class ModelEvaluator:
                             dataloader: Optional[torch.utils.data.DataLoader] = None,
                             dtype: torch.dtype = torch.float32) -> Dict[str, float]:
         """High-resolution inference benchmark with optional dataloader input."""
-        device = next(model.parameters()).device
         if dataloader is not None:
             ds_iter = iter(dataloader)
-            sample_batch = next(ds_iter)[0][:batch_size].to(device, dtype=dtype)
+            sample_batch = next(ds_iter)[0][:batch_size].to(self.device, dtype=dtype)
         else:
             input_shape = (batch_size, 3, 32, 32)
-            sample_batch = torch.randn(input_shape).to(device, dtype=dtype)
+            sample_batch = torch.randn(input_shape).to(self.device, dtype=dtype)
 
         # Warmup
         model.eval()
+        model.to(self.device)
         with torch.no_grad():
             for _ in range(max(0, warmup_runs)):
                 _ = model(sample_batch)
@@ -180,15 +180,15 @@ class ModelEvaluator:
             dataloader = torch.utils.data.DataLoader(dataloader, batch_size=self.config.batch_size)
 
         model.eval()
+        model.to(self.device)
         total_loss = 0
         total_correct = 0
         total_samples = 0
         criterion = nn.CrossEntropyLoss()
-        device = next(model.parameters()).device
 
         with torch.no_grad():
             for inputs, labels in dataloader:
-                inputs, labels = inputs.to(device), labels.to(device)
+                inputs, labels = inputs.to(self.device), labels.to(self.device)
                 outputs = model(inputs)
                 loss = criterion(outputs, labels)
                 total_loss += loss.item() * inputs.size(0)

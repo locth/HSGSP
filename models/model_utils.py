@@ -49,6 +49,7 @@ class ModelUtils:
         """Estimate FLOPs for the model"""
         total_flops = 0
         input_shape = (1, 3, 32, 32)  # Assuming CIFAR input
+        device = next(model.parameters()).device
         
         def hook_fn(module, input, output):
             nonlocal total_flops
@@ -72,8 +73,10 @@ class ModelUtils:
         for module in model.modules():
             hooks.append(module.register_forward_hook(hook_fn))
         
+        dummy_input = torch.randn(input_shape, device=device)
+        
         with torch.no_grad():
-            model(torch.randn(input_shape))
+            model(dummy_input)
         
         for h in hooks:
             h.remove()

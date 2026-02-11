@@ -24,6 +24,7 @@ class HSGSPTrainer:
     def __init__(self, config):
         self.config = config
         self.logger = Logger(config)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')  # Thêm dòng này
 
         # Training history
         self.history = {
@@ -120,7 +121,7 @@ class HSGSPTrainer:
         Train the model with comprehensive anti-overfitting strategies
         """
         epochs = epochs or self.config.default_epochs
-        device = next(model.parameters()).device
+        # device = next(model.parameters()).device
 
         overfitting_monitor = OverfittingMonitor(
             patience=5,
@@ -134,6 +135,7 @@ class HSGSPTrainer:
 
         optimizer = self.compile_model(model, learning_rate=self.config.initial_lr)
         scheduler = self._create_lr_schedule(optimizer, epochs)
+        model.to(self.device)
         criterion = nn.CrossEntropyLoss(label_smoothing=self.config.label_smoothing)
 
         writer = SummaryWriter(log_dir=os.path.join(self.config.tensorboard_dir, datetime.now().strftime("%d%m%Y-%H%M%S")))
@@ -146,7 +148,7 @@ class HSGSPTrainer:
 
             for batch in tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{epochs} - Training"):
                 inputs, labels = batch
-                inputs, labels = inputs.to(device), labels.to(device)
+                inputs, labels = inputs.to(self.device), labels.to(self.device)
                 optimizer.zero_grad()
                 outputs = model(inputs)
                 loss, correct = self.compute_loss_and_acc(outputs, labels, criterion)
@@ -166,7 +168,7 @@ class HSGSPTrainer:
             with torch.no_grad():
                 for batch in tqdm(val_dataloader, desc=f"Epoch {epoch+1}/{epochs} - Validation"):
                     inputs, labels = batch
-                    inputs, labels = inputs.to(device), labels.to(device)
+                    inputs, labels = inputs.to(self.device), labels.to(self.device)
                     outputs = model(inputs)
                     loss, correct = self.compute_loss_and_acc(outputs, labels, criterion)
                     val_loss += loss.item()

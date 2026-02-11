@@ -47,6 +47,9 @@ def main(args):
 
     logger = Logger(config)
     logger.info('Starting hybrid pruning experiment')
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Using device: {device}")  # Hoặc logger.info nếu dùng logger
 
     data_loader = HSGSP_DataLoader(config)
     trainer = HSGSPTrainer(config)

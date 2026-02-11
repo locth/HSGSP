@@ -1,10 +1,15 @@
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Subset, random_split
+from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
 from typing import Tuple
+import random
 
 SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
 
 class HSGSP_DataLoader:
     """Unified dataset loader for HSGSP project"""
@@ -12,118 +17,111 @@ class HSGSP_DataLoader:
     def __init__(self, config):
         self.config = config
 
-    def _apply_mixup(self, dataloader: DataLoader) -> DataLoader:
+    def _apply_mixup(self, images, labels):
         use_mixup = bool(getattr(self.config, "use_mixup", False))
         mixup_alpha = float(getattr(self.config, "mixup_alpha", 0.0))
         mixup_prob = float(getattr(self.config, "mixup_prob", 0.0))
         if not use_mixup or mixup_alpha <= 0.0 or mixup_prob <= 0.0:
-            return dataloader
+            return images, labels
 
-        class MixupWrapper:
-            def __init__(self, dl, alpha, prob):
-                self.dl = dl
-                self.alpha = alpha
-                self.prob = prob
-
-            def __iter__(self):
-                for batch in self.dl:
-                    images, labels = batch
-                    labels = labels.long()
-                    if torch.rand(1).item() < self.prob:
-                        gamma1 = torch.distributions.gamma.Gamma(self.alpha, 1.0).sample()
-                        gamma2 = torch.distributions.gamma.Gamma(self.alpha, 1.0).sample()
-                        lam = gamma1 / (gamma1 + gamma2)
-                        batch_size = images.size(0)
-                        indices = torch.randperm(batch_size)
-                        shuffled_images = images[indices]
-                        shuffled_labels = labels[indices]
-                        mixed_images = lam * images + (1.0 - lam) * shuffled_images
-                        mixed_labels = lam * torch.nn.functional.one_hot(labels, num_classes=10).float() + (1.0 - lam) * torch.nn.functional.one_hot(shuffled_labels, num_classes=10).float()
-                        yield mixed_images, mixed_labels
-                    else:
-                        yield images, torch.nn.functional.one_hot(labels, num_classes=10).float()
-
-            def __len__(self):
-                return len(self.dl)
-
-        return MixupWrapper(dataloader, mixup_alpha, mixup_prob)
+        if random.random() < mixup_prob:
+            batch_size = images.size()[0]
+            lam = np.random.beta(mixup_alpha, mixup_alpha)
+            index = torch.randperm(batch_size).to(images.device)
+            images = lam * images + (1 - lam) * images[index]
+            labels_a, labels_b = labels, labels[index]
+            return images, (labels_a, labels_b, lam)
+        return images, labels
 
     def load_cifar10(self) -> Tuple[DataLoader, DataLoader, DataLoader, DataLoader]:
         """Load and preprocess CIFAR-10 dataset.
 
         Returns:
-            train_dl: augmented training dataloader (with stochastic transforms)
-            val_dl: validation dataloader without augmentation
-            test_dl: test dataloader without augmentation
-            train_eval_dl: clean view of the training set (no augmentation) for evaluation
+            train_loader: augmented training dataset (with stochastic transforms)
+            val_loader: validation dataset without augmentation
+            test_loader: test dataset without augmentation
+            train_eval_loader: clean view of the training set (no augmentation) for evaluation
         """
-        normalize = transforms.Normalize(mean=[0.4914, 0.4822, 0.4465],
-                                         std=[0.2023, 0.1994, 0.2010])
-
-        train_transform = transforms.Compose([
+        transform_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4, padding_mode='reflect'),
             transforms.RandomHorizontalFlip(),
-            transforms.RandomApply([transforms.ColorJitter(brightness=0.15, contrast=0.4, saturation=0.4)], p=0.5),
+            transforms.RandomApply([transforms.ColorJitter(brightness=0.15)], p=0.5),
+            transforms.RandomApply([transforms.ColorJitter(contrast=0.4)], p=0.5),
+            transforms.RandomApply([transforms.ColorJitter(saturation=0.4)], p=0.5),
             transforms.ToTensor(),
-            normalize,
-        ]) if self.config.data_augmentation else transforms.Compose([transforms.ToTensor(), normalize])
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            transforms.RandomErasing(p=0.5, scale=(0.02, 0.25), ratio=(0.3, 3.3)),
+        ] if self.config.data_augmentation else transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ]))
 
-        test_transform = transforms.Compose([transforms.ToTensor(), normalize])
+        transform_test = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ])
 
-        full_train_set = datasets.CIFAR10(root='./data', train=True, download=True, transform=train_transform)
-        train_clean_set = datasets.CIFAR10(root='./data', train=True, download=True, transform=test_transform)
-        test_set = datasets.CIFAR10(root='./data', train=False, download=True, transform=test_transform)
+        train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
+        test_dataset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
+        train_eval_dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_test)
 
-        val_size = int(len(full_train_set) * self.config.validation_split)
-        train_size = len(full_train_set) - val_size
-        train_set, val_set = random_split(full_train_set, [train_size, val_size])
-        train_clean_set, val_clean_set = random_split(train_clean_set, [train_size, val_size])  # But we use train_clean_set for eval
+        num_train = len(train_dataset)
+        indices = list(range(num_train))
+        np.random.shuffle(indices)
+        split = int(np.floor(self.config.validation_split * num_train))
 
-        train_dl = DataLoader(train_set, batch_size=self.config.batch_size, shuffle=True, num_workers=4)
-        val_dl = DataLoader(val_set, batch_size=self.config.batch_size, shuffle=False, num_workers=4)
-        test_dl = DataLoader(test_set, batch_size=self.config.batch_size, shuffle=False, num_workers=4)
-        train_eval_dl = DataLoader(train_clean_set, batch_size=self.config.batch_size, shuffle=False, num_workers=4)
+        train_idx, val_idx = indices[split:], indices[:split]
 
-        train_dl = self._apply_mixup(train_dl)
+        train_subset = Subset(train_dataset, train_idx)
+        val_subset = Subset(train_dataset, val_idx)
+        train_eval_subset = Subset(train_eval_dataset, train_idx)
 
-        return train_dl, val_dl, test_dl, train_eval_dl
+        train_loader = DataLoader(train_subset, batch_size=self.config.batch_size, shuffle=True, num_workers=2, pin_memory=True)
+        val_loader = DataLoader(val_subset, batch_size=self.config.batch_size, shuffle=False, num_workers=2, pin_memory=True)
+        test_loader = DataLoader(test_dataset, batch_size=self.config.batch_size, shuffle=False, num_workers=2, pin_memory=True)
+        train_eval_loader = DataLoader(train_eval_subset, batch_size=self.config.batch_size, shuffle=False, num_workers=2, pin_memory=True)
+
+        return train_loader, val_loader, test_loader, train_eval_loader
 
     def load_cifar100(self) -> Tuple[DataLoader, DataLoader, DataLoader, DataLoader]:
-        """Load and preprocess CIFAR-100 dataset.
-
-        Returns:
-            train_dl: augmented training dataloader
-            val_dl: validation dataloader without augmentation
-            test_dl: test dataloader without augmentation
-            train_eval_dl: clean training dataloader for evaluation/monitoring
-        """
-        normalize = transforms.Normalize(mean=[0.5071, 0.4867, 0.4408],
-                                         std=[0.2675, 0.2565, 0.2761])
-
-        train_transform = transforms.Compose([
+        """Load and preprocess CIFAR-100 dataset."""
+        transform_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4, padding_mode='reflect'),
             transforms.RandomHorizontalFlip(),
-            transforms.RandomApply([transforms.ColorJitter(brightness=0.15, contrast=0.4, saturation=0.4)], p=0.5),
+            transforms.RandomApply([transforms.ColorJitter(brightness=0.15)], p=0.5),
+            transforms.RandomApply([transforms.ColorJitter(contrast=0.4)], p=0.5),
+            transforms.RandomApply([transforms.ColorJitter(saturation=0.4)], p=0.5),
             transforms.ToTensor(),
-            normalize,
-        ]) if self.config.data_augmentation else transforms.Compose([transforms.ToTensor(), normalize])
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            transforms.RandomErasing(p=0.5, scale=(0.02, 0.25), ratio=(0.3, 3.3)),
+        ] if self.config.data_augmentation else transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ]))
 
-        test_transform = transforms.Compose([transforms.ToTensor(), normalize])
+        transform_test = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ])
 
-        full_train_set = datasets.CIFAR100(root='./data', train=True, download=True, transform=train_transform)
-        train_clean_set = datasets.CIFAR100(root='./data', train=True, download=True, transform=test_transform)
-        test_set = datasets.CIFAR100(root='./data', train=False, download=True, transform=test_transform)
+        train_dataset = datasets.CIFAR100(root='./data', train=True, download=True, transform=transform_train)
+        test_dataset = datasets.CIFAR100(root='./data', train=False, download=True, transform=transform_test)
+        train_eval_dataset = datasets.CIFAR100(root='./data', train=True, download=True, transform=transform_test)
 
-        val_size = int(len(full_train_set) * self.config.validation_split)
-        train_size = len(full_train_set) - val_size
-        train_set, val_set = random_split(full_train_set, [train_size, val_size])
-        train_clean_set, val_clean_set = random_split(train_clean_set, [train_size, val_size])
+        num_train = len(train_dataset)
+        indices = list(range(num_train))
+        np.random.shuffle(indices)
+        split = int(np.floor(self.config.validation_split * num_train))
 
-        train_dl = DataLoader(train_set, batch_size=self.config.batch_size, shuffle=True, num_workers=4)
-        val_dl = DataLoader(val_set, batch_size=self.config.batch_size, shuffle=False, num_workers=4)
-        test_dl = DataLoader(test_set, batch_size=self.config.batch_size, shuffle=False, num_workers=4)
-        train_eval_dl = DataLoader(train_clean_set, batch_size=self.config.batch_size, shuffle=False, num_workers=4)
+        train_idx, val_idx = indices[split:], indices[:split]
 
-        train_dl = self._apply_mixup(train_dl)
+        train_subset = Subset(train_dataset, train_idx)
+        val_subset = Subset(train_dataset, val_idx)
+        train_eval_subset = Subset(train_eval_dataset, train_idx)
 
-        return train_dl, val_dl, test_dl, train_eval_dl
+        train_loader = DataLoader(train_subset, batch_size=self.config.batch_size, shuffle=True, num_workers=2, pin_memory=True)
+        val_loader = DataLoader(val_subset, batch_size=self.config.batch_size, shuffle=False, num_workers=2, pin_memory=True)
+        test_loader = DataLoader(test_dataset, batch_size=self.config.batch_size, shuffle=False, num_workers=2, pin_memory=True)
+        train_eval_loader = DataLoader(train_eval_subset, batch_size=self.config.batch_size, shuffle=False, num_workers=2, pin_memory=True)
+
+        return train_loader, val_loader, test_loader, train_eval_loader

@@ -8,7 +8,7 @@ class VGGForCIFAR10(nn.Module):
     def __init__(self, config, num_classes: int, input_shape: Tuple[int, int, int]):
         super().__init__()
         self.config = config
-        in_channels = input_shape[2]
+        in_channels = input_shape[0]
         self.features = nn.Sequential(
             # Block 1
             nn.Conv2d(in_channels, 64, kernel_size=3, padding=1),

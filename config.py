@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Tuple, Dict, Optional
 from datetime import datetime
 
+
 @dataclass
 class Config:
     """Configuration for HSGSP pruning method"""
@@ -16,8 +17,8 @@ class Config:
     # Dataset specific
     num_classes_cifar10: int = 10
     num_classes_cifar100: int = 100
-    input_shape_cifar10: Tuple[int, int, int] = (32, 32, 3)
-    input_shape_cifar100: Tuple[int, int, int] = (32, 32, 3)
+    input_shape_cifar10: Tuple[int, int, int] = (3, 32, 32)
+    input_shape_cifar100: Tuple[int, int, int] = (3, 32, 32)
     # ========== TRAINING CONFIGURATION ==========
     default_epochs: int = 200 
     initial_lr: float = 7e-4
@@ -68,7 +69,7 @@ class Config:
     # Frequency analysis
     frequency_bands: Dict[str, tuple] = None
 
-    # Comlexity weights
+    # Complexity weights
     complexity_weights: Dict[str, float] = None
     max_global_pruning_ratio: float = 0.85  # Hard cap on global pruning ratio
     min_global_keep: float = 0.3  # Ensure at least this fraction of channels remain
@@ -86,16 +87,14 @@ class Config:
     mixup_prob: float = 0.5
 
     # ========== HYBRID BASELINE CONFIGURATION ==========
-    hybrid_iterations: int = 20 # AnFix 
-    # hybrid_iterations: int = 2
+    hybrid_iterations: int = 20
     hybrid_prune_fraction: float = 0.07
     hybrid_alpha: float = 0.5
     hybrid_kappa_beta: float = 0.1
     hybrid_initial_kappa_ratio: float = 0.5
     hybrid_mode: str = 'original'  # 'frequency' or 'original'
     hybrid_min_filters: int = 8
-    hybrid_finetune_epochs: int = 20 # AnFix
-    # hybrid_finetune_epochs: int = 2
+    hybrid_finetune_epochs: int = 20
     hybrid_warmup_epochs: int = 0
     hybrid_warmup_lr: float = 2e-4
     hybrid_regrow_fraction: float = 0.15 # 0.15 by default
