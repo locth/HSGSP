@@ -69,6 +69,7 @@ class HybridFrequencyBaseline:
         baseline_metrics = self.evaluator.evaluate_model(model, val_ds, "Hybrid Baseline (validation)")
         baseline_loss = float(baseline_metrics.get("loss", 0.0))
         baseline_acc = baseline_metrics.get("accuracy")
+        best_val_acc = baseline_acc
         baseline_acc_str = f"{baseline_acc:.4f}" if baseline_acc is not None else "nan"
         self.logger.info(
             f"Hybrid baseline: initial val_loss={baseline_loss:.4f}, "
@@ -81,6 +82,9 @@ class HybridFrequencyBaseline:
         current_model = model
 
         target_refresh = int(getattr(self.config, "frequency_entropy_refresh_interval", 0))
+        stop_on_acc = bool(getattr(self.config, "hybrid_stop_on_accuracy", False))
+        accuracy_tolerance = float(getattr(self.config, "hybrid_accuracy_tolerance", 0.0))
+        param_target = int(getattr(self.config, "hybrid_target_params", 0))
         while iteration < self.config.hybrid_iterations:
             iteration += 1
             self.logger.info(f"Hybrid baseline iteration {iteration}/{self.config.hybrid_iterations}...")
@@ -105,7 +109,7 @@ class HybridFrequencyBaseline:
             grad_scores = self._compute_gradient_saliency(current_model, train_eval_ds or train_ds)
             hybrid_scores = self._combine_scores(freq_scores, grad_scores)
 
-            masks = self._select_pruning_masks(hybrid_scores, iteration)
+            masks = self._select_pruning_masks_new(hybrid_scores, iteration)
             # if "conv1" in masks:
             #     masks["conv1"] = np.ones_like(masks["conv1"], dtype=bool)
             current_model = self._apply_pruning(current_model, masks, hybrid_scores)
@@ -142,7 +146,7 @@ class HybridFrequencyBaseline:
                 log_dir_suffix=f"hybrid_iter_{iteration}",
                 train_eval_dataset=train_eval_ds,
                 # frequency_regularizer_config=freq_reg_config,
-                # teacher_model=teacher,
+                teacher_model=teacher,
             )
 
             metrics = self.evaluator.evaluate_model(current_model, val_ds, "Hybrid Baseline (validation)")
@@ -166,11 +170,46 @@ class HybridFrequencyBaseline:
             )
 
             delta_loss = max(0.0, val_loss - baseline_loss)
+            acc_drop_from_best = 0.0
+            if best_val_acc is not None and val_acc is not None:
+                acc_drop_from_best = max(0.0, best_val_acc - val_acc)
+            beta_loss = float(getattr(self.config, "hybrid_kappa_beta", 0.1))
+            beta_acc = float(getattr(self.config, "hybrid_kappa_acc_beta", 0.0))
+            decay = 1.0 - beta_loss * delta_loss - beta_acc * acc_drop_from_best
+            decay = max(decay, 0.0)
+            kappa_floor = self._kappa_floor(iteration)
             kappa_ratio = max(
-                0.05,
-                kappa_ratio * (1.0 - self.config.hybrid_kappa_beta * delta_loss),
+                kappa_floor,
+                kappa_ratio * decay,
             )
+            improved = val_acc is not None and (best_val_acc is None or val_acc > best_val_acc)
+            if improved:
+                recovery = float(getattr(self.config, "hybrid_kappa_recovery", 0.0))
+                if recovery > 0.0:
+                    kappa_ratio = min(
+                        float(getattr(self.config, "hybrid_initial_kappa_ratio", kappa_ratio)),
+                        kappa_ratio + recovery,
+                    )
+                best_val_acc = val_acc
+            elif best_val_acc is None and val_acc is not None:
+                best_val_acc = val_acc
             baseline_loss = val_loss
+            if stop_on_acc and baseline_acc is not None and val_acc is not None:
+                drop = baseline_acc - val_acc
+                if drop > accuracy_tolerance:
+                    self.logger.info(
+                        "Stopping hybrid pruning: accuracy dropped %.4f (tolerance %.4f).",
+                        drop,
+                        accuracy_tolerance,
+                    )
+                    break
+            if param_target > 0 and param_stats["total"] <= param_target:
+                self.logger.info(
+                    "Stopping hybrid pruning: parameter target (%d) reached (current=%d).",
+                    param_target,
+                    param_stats["total"],
+                )
+                break
 
         return current_model, iteration_history
 
@@ -713,51 +752,51 @@ class HybridFrequencyBaseline:
         return combined
 
     def _select_pruning_masks_new(
-        self,
-        model: tf.keras.Model,
-        scores: Dict[str, np.ndarray],
-        iteration: int = 1,
-    ) -> Dict[str, np.ndarray]:
-        if not scores:
-            return {}
-
+            self, scores: Dict[str, np.ndarray],
+            iteration: int = 1) -> Dict[str, np.ndarray]:
+        
         prune_ratio = float(self.config.hybrid_prune_fraction)
-        taper_start = 6
-        if iteration > taper_start:
-            decay_steps = max(1, self.config.hybrid_iterations - taper_start)
-            frac = (iteration - taper_start) / decay_steps
-            target_floor = 0.02 if prune_ratio > 0.02 else prune_ratio
-            prune_ratio = prune_ratio - (prune_ratio - target_floor) * min(1.0, frac)
+        taper_start = int(getattr(self.config, "hybrid_taper_start", 8))
+        late_ratio = float(getattr(self.config, "hybrid_late_prune_fraction", prune_ratio))
+        if iteration >= taper_start:
+            prune_ratio = min(prune_ratio, late_ratio)
 
-        if prune_ratio <= 0.0:
-            return {}
-
-        normalized_scores: Dict[str, np.ndarray] = {}
+        pools: List[Tuple[str, int, float]] = []
         for layer_name, layer_scores in scores.items():
-            if layer_scores.size == 0:
-                continue
-            mean = np.mean(layer_scores)
-            std = np.std(layer_scores)
-            if std < 1e-8:
-                normalized_scores[layer_name] = layer_scores
-            else:
-                normalized_scores[layer_name] = (layer_scores - mean) / (std + 1e-8)
+            for idx, value in enumerate(layer_scores):
+                pools.append((layer_name, idx, float(value)))
 
-        if not normalized_scores:
+        if not pools:
             return {}
 
-        structured_configs = self.pruning_util.select_filters_structured(
-            normalized_scores,
-            prune_ratio,
-            model,
-        )
+        pools.sort(key=lambda item: item[2])
+        total_filters = len(pools)
+        target_prunes = int(total_filters * prune_ratio)
+        if target_prunes <= 0:
+            return {}
 
+        prune_indices = {(layer, idx) for layer, idx, _ in pools[:target_prunes]}
         masks: Dict[str, np.ndarray] = {}
-        for layer_name, config in structured_configs.items():
-            masks[layer_name] = config.mask
+
+        for layer_name, layer_scores in scores.items():
+            mask = np.ones_like(layer_scores, dtype=bool)
+            for idx in range(len(layer_scores)):
+                if (layer_name, idx) in prune_indices:
+                    mask[idx] = False
+            keep = int(mask.sum())
+            if keep < self.config.hybrid_min_filters:
+                # enforce minimum filter constraint by restoring highest scoring filters
+                order = np.argsort(layer_scores)[::-1]
+                mask[:] = False
+                mask[order[:self.config.hybrid_min_filters]] = True
+            masks[layer_name] = mask
+
         return masks
 
-    def _select_pruning_masks(self, scores: Dict[str, np.ndarray], iteration: int = 1) -> Dict[str, np.ndarray]:
+    def _select_pruning_masks(
+            self, scores: Dict[str, np.ndarray],
+            iteration: int = 1) -> Dict[str, np.ndarray]:
+        
         prune_ratio = float(self.config.hybrid_prune_fraction)
         taper_start = 8
         if iteration > taper_start:
@@ -798,6 +837,14 @@ class HybridFrequencyBaseline:
         return masks
 
     # --------------------------- pruning --------------------------- #
+    def _kappa_floor(self, iteration: int) -> float:
+        high = float(getattr(self.config, "hybrid_kappa_floor_high", 0.3))
+        low = float(getattr(self.config, "hybrid_kappa_floor_low", 0.15))
+        switch_iter = max(1, int(getattr(self.config, "hybrid_kappa_floor_iter", 8)))
+        if iteration <= switch_iter:
+            return max(0.0, min(1.0, high))
+        return max(0.0, min(1.0, low))
+
     def _apply_pruning(
         self,
         model: tf.keras.Model,

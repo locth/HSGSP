@@ -10,7 +10,7 @@ class Config:
 
     # ========== DATA CONFIGURATION ==========
     task: str = 'cifar10'  # 'cifar10' or 'cifar100'
-    validation_split: float = 0.2
+    validation_split: float = 0.1
     data_augmentation: bool = True
     batch_size: int = 128
 
@@ -20,23 +20,23 @@ class Config:
     input_shape_cifar10: Tuple[int, int, int] = (32, 32, 3)
     input_shape_cifar100: Tuple[int, int, int] = (32, 32, 3)
     # ========== TRAINING CONFIGURATION ==========
-    default_epochs: int = 200 
-    initial_lr: float = 7e-4
+    default_epochs: int = 240 
+    initial_lr: float = 0.1 # from 7e-4
     pruned_growth_lr: float = 1e-4 # default: 1e-4
     min_lr: float = 1e-5 # default: 1e-5
     momentum: float = 0.9  # for SGD
-    optimizer: str = 'adamw'  # 'adam', 'adamw', 'sgd', 'rmsprop'
+    optimizer: str = 'sgd'  # 'adam', 'adamw', 'sgd', 'rmsprop'
 
     # Learning rate schedule
-    lr_schedule: str = 'cosine'  # 'cosine', 'exponential', 'step'
-    lr_warmup_epochs: int = 5
-    lr_decay_rate: float = 0.2
-    lr_decay_steps: int = 60
+    lr_schedule: str = 'step'  # 'cosine', 'exponential', 'step'
+    lr_warmup_epochs: int = 0
+    lr_decay_rate: float = 0.5
+    lr_decay_steps: int = 20
 
     # Early Stopping (updated)
-    early_stopping_patience: int = 7
+    early_stopping_patience: int = 0 # from 7
     early_stopping_min_delta: float = 1e-4
-    reduce_lr_patience: int = 10
+    reduce_lr_patience: int = 10 # from 10
     reduce_lr_factor: float = 0.5
     reduce_lr_min_delta: float = 1e-3
     fine_tune_lr_schedule: str = 'cosine'  # 'plateau', 'exponential', 'cosine', 'linear', 'step'
@@ -47,19 +47,19 @@ class Config:
     fine_tune_step_decay_epochs: int = 5
 
     # Regularization
-    l2_regularization: float = 1e-4
+    l2_regularization: float = 5e-4 # from 1e-4
     batch_norm_momentum: float = 0.9
 
     dropout_rate: float = 0.3 # convolutional dropout strength
     use_spatial_dropout: bool = True
-    spatial_dropout_rate: float = 0.25
-    fc_dropout_rate1: float = 0.4
-    fc_dropout_rate2: float = 0.3
+    spatial_dropout_rate: float = 0.1 # from 0.25
+    fc_dropout_rate1: float = 0.2 # from 0.4
+    fc_dropout_rate2: float = 0.2 # from 0.3
 
-    weight_decay: float = 1e-4
+    weight_decay: float = 0 # from 1e-4
 
     # Label Smoothing
-    label_smoothing: float = 0.1
+    label_smoothing: float = 0.02 # from 0.1
 
     # ========== DISTILLATION CONFIGURATION ==========
     distill_alpha: float = 0.2
@@ -82,7 +82,7 @@ class Config:
     simple_finetune_lr: float = 1e-5
 
     # ========== AUGMENTATION CONFIGURATION ==========
-    use_mixup: bool = True
+    use_mixup: bool = False # from True
     mixup_alpha: float = 0.4
     mixup_prob: float = 0.5
 

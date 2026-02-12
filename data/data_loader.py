@@ -12,6 +12,21 @@ class DataLoader:
     def __init__(self, config):
         self.config = config
 
+    @staticmethod
+    def _standardize_batch(
+        images: tf.Tensor,
+        labels: tf.Tensor,
+        mean: Tuple[float, float, float],
+        std: Tuple[float, float, float],
+    ) -> Tuple[tf.Tensor, tf.Tensor]:
+        """Apply per-channel mean/std normalization on a batched image tensor."""
+        mean_tensor = tf.constant(mean, dtype=images.dtype)
+        std_tensor = tf.constant(std, dtype=images.dtype)
+        mean_tensor = tf.reshape(mean_tensor, [1, 1, 1, 3])
+        std_tensor = tf.reshape(std_tensor, [1, 1, 1, 3])
+        images = (images - mean_tensor) / std_tensor
+        return images, labels
+
     def _apply_mixup(self, dataset: tf.data.Dataset) -> tf.data.Dataset:
         use_mixup = bool(getattr(self.config, "use_mixup", False))
         mixup_alpha = float(getattr(self.config, "mixup_alpha", 0.0))
@@ -53,6 +68,9 @@ class DataLoader:
             train_eval_ds: clean view of the training set (no augmentation) for evaluation
         """
 
+        cifar10_mean = tuple(getattr(self.config, "cifar10_mean", (0.4914, 0.4822, 0.4465)))
+        cifar10_std = tuple(getattr(self.config, "cifar10_std", (0.2470, 0.2435, 0.2616)))
+
         def _augment(image, label):
             """Data augmentation for training"""
             # Pad + crop to inject spatial jitter similar to standard CIFAR policy
@@ -90,6 +108,10 @@ class DataLoader:
             dataset = dataset.batch(self.config.batch_size)
             if is_training:
                 dataset = self._apply_mixup(dataset)
+            dataset = dataset.map(
+                lambda images, labels: self._standardize_batch(images, labels, cifar10_mean, cifar10_std),
+                num_parallel_calls=AUTOTUNE,
+            )
             dataset = dataset.prefetch(tf.data.AUTOTUNE)
 
             return dataset
@@ -145,6 +167,9 @@ class DataLoader:
             train_eval_ds: clean training dataset for evaluation/monitoring
         """
 
+        cifar100_mean = tuple(getattr(self.config, "cifar100_mean", (0.5071, 0.4867, 0.4408)))
+        cifar100_std = tuple(getattr(self.config, "cifar100_std", (0.2675, 0.2565, 0.2761)))
+
         def _augment(image, label):
             """Data augmentation for training"""
             image = tf.pad(image, [[4, 4], [4, 4], [0, 0]], mode='REFLECT')
@@ -179,6 +204,10 @@ class DataLoader:
             dataset = dataset.batch(self.config.batch_size)
             if is_training:
                 dataset = self._apply_mixup(dataset)
+            dataset = dataset.map(
+                lambda images, labels: self._standardize_batch(images, labels, cifar100_mean, cifar100_std),
+                num_parallel_calls=AUTOTUNE,
+            )
             dataset = dataset.prefetch(tf.data.AUTOTUNE)
 
             return dataset
