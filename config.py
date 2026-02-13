@@ -87,14 +87,14 @@ class Config:
     cutout_length: int = 8  # Adjust cho 64x64 images
 
     # ========== HYBRID BASELINE CONFIGURATION ==========
-    hybrid_iterations: int = 0  # Disable
+    hybrid_iterations: int = 11  # Disable
     hybrid_prune_fraction: float = 0.0
     hybrid_alpha: float = 0.5
     hybrid_kappa_beta: float = 0.1
     hybrid_initial_kappa_ratio: float = 0.5
     hybrid_mode: str = 'original'
     hybrid_min_filters: int = 8
-    hybrid_finetune_epochs: int = 20
+    hybrid_finetune_epochs: int = 11
     hybrid_warmup_epochs: int = 0
     hybrid_warmup_lr: float = 2e-4
     hybrid_regrow_fraction: float = 0.0
