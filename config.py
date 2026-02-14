@@ -8,6 +8,9 @@ from datetime import datetime
 class Config:
     """Configuration for HSGSP pruning method"""
 
+    # ========== REPRODUCIBILITY CONFIGURATION ==========
+    seed: int = 42
+
     # ========== DATA CONFIGURATION ==========
     task: str = 'cifar10'  # 'cifar10' or 'cifar100'
     validation_split: float = 0.1
@@ -25,20 +28,21 @@ class Config:
     pruned_growth_lr: float = 1e-4 # default: 1e-4
     min_lr: float = 1e-5 # default: 1e-5
     momentum: float = 0.9  # for SGD
-    optimizer: str = 'sgd'  # 'adam', 'adamw', 'sgd', 'rmsprop'
+    optimizer: str = 'admaw'  # 'sgd' for training, 'adamw' for pruning growth phase
 
     # Learning rate schedule
-    lr_schedule: str = 'step'  # 'cosine', 'exponential', 'step'
+    lr_schedule: str = 'cosine'  # 'cosine', 'exponential', 'step'
     lr_warmup_epochs: int = 0
     lr_decay_rate: float = 0.5
     lr_decay_steps: int = 20
 
     # Early Stopping (updated)
-    early_stopping_patience: int = 0 # from 7
+    early_stopping_patience: int = 15 # from 0 for training, 15 for pruning
     early_stopping_min_delta: float = 1e-4
     reduce_lr_patience: int = 10 # from 10
     reduce_lr_factor: float = 0.5
     reduce_lr_min_delta: float = 1e-3
+    # fine_tune_label_smoothing: float = 0.03
     fine_tune_lr_schedule: str = 'cosine'  # 'plateau', 'exponential', 'cosine', 'linear', 'step'
     fine_tune_exp_decay: float = 0.8
     fine_tune_cosine_min_factor: float = 0.05 # | 0.05 by default
@@ -56,7 +60,7 @@ class Config:
     fc_dropout_rate1: float = 0.2 # from 0.4
     fc_dropout_rate2: float = 0.2 # from 0.3
 
-    weight_decay: float = 0 # from 1e-4
+    weight_decay: float = 2e-5 # 0 for training, 2e-5 for pruning growth phase
 
     # Label Smoothing
     label_smoothing: float = 0.02 # from 0.1
@@ -87,14 +91,23 @@ class Config:
     mixup_prob: float = 0.5
 
     # ========== HYBRID BASELINE CONFIGURATION ==========
-    hybrid_iterations: int = 20
-    hybrid_prune_fraction: float = 0.07
+    hybrid_iterations: int = 30
+    hybrid_prune_fraction: float = 0.08
+    hybrid_late_prune_fraction: float = 0.06
     hybrid_alpha: float = 0.5
-    hybrid_kappa_beta: float = 0.1
-    hybrid_initial_kappa_ratio: float = 0.5
+    hybrid_taper_start: int = 15
+
+    hybrid_kappa_beta: float = 0.03
+    hybrid_initial_kappa_ratio: float = 0.6
+    hybrid_kappa_floor_high: float = 0.55
+    hybrid_kappa_floor_low: float = 0.5
+    hybrid_kappa_floor_iter: int = 30
+    hybrid_kappa_recovery: float = 0.01
+    hybrid_kappa_acc_beta: float = 0.0
+
     hybrid_mode: str = 'original'  # 'frequency' or 'original'
     hybrid_min_filters: int = 8
-    hybrid_finetune_epochs: int = 20
+    hybrid_finetune_epochs: int = 25
     hybrid_warmup_epochs: int = 0
     hybrid_warmup_lr: float = 2e-4
     hybrid_regrow_fraction: float = 0.15 # 0.15 by default

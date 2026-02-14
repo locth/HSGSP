@@ -8,8 +8,8 @@ if [ "$dataset" = "CIFAR-10" ]; then
     echo "Running CIFAR-10 hybrid baseline..."
     python main.py \
         --task cifar10 \
-        --model_path "EXPERIMENT/11022026_171013_cifar10/models/best_model_187_0.944.h5" \
-        --pruned_model_path "EXPERIMENT/11022026_171013_cifar10/models/cifar10_hybrid_pruned.h5" \
+        --model_path "EXPERIMENT/11022026_171013_cifar10_BASE/models/best_model_187_0.944.h5" \
+        --prune \
         --eval \
         --gpu 0
 elif [ "$dataset" = "CIFAR-100" ]; then

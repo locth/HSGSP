@@ -610,7 +610,7 @@ class HSGSPTrainer:
         callbacks = [
             tf.keras.callbacks.EarlyStopping(
                 monitor='val_accuracy',
-                patience=7,
+                patience=15,
                 restore_best_weights=True,
                 mode='max'
             )
