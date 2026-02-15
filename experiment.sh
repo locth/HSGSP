@@ -20,6 +20,14 @@ elif [ "$dataset" = "CIFAR-100" ]; then
         --prune \
         --eval \
         --gpu 0
+elif [ "$dataset" = "Tiny-ImageNet" ]; then
+    echo "Running Tiny ImageNet hybrid baseline..."
+    python main.py \
+        --task tiny_imagenet \
+        --train \
+        --prune \
+        --eval \
+        --gpu 0
 else
     echo "Dataset not available"
 fi

@@ -21,6 +21,10 @@ def _load_datasets(data_loader: DataLoader, task: str, logger: Logger):
         logger.info('Loading CIFAR-100 dataset...')
         train_ds, val_ds, test_ds, train_clean_ds = data_loader.load_cifar100()
         return 'CIFAR-100', train_ds, val_ds, test_ds, train_clean_ds
+    if task == 'tiny_imagenet':
+        logger.info('Loading Tiny ImageNet dataset...')
+        train_ds, val_ds, test_ds, train_clean_ds = data_loader.load_tiny_imagenet()
+        return 'Tiny ImageNet', train_ds, val_ds, test_ds, train_clean_ds
     raise ValueError(f"Unsupported task: {task}")
 
 
@@ -35,6 +39,11 @@ def _build_model(config: Config, task: str):
         return builder.build_vgg16_model(
             num_classes=config.num_classes_cifar100,
             input_shape=config.input_shape_cifar100,
+        )
+    if task == 'tiny_imagenet':
+        return builder.build_vgg16_model(
+            num_classes=config.num_classes_tiny_imagenet,
+            input_shape=config.input_shape_tiny_imagenet,
         )
     raise ValueError(f"Unsupported task for VGG16: {task}")
 
@@ -171,8 +180,14 @@ def main(args):
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description='Hybrid Frequency-Aware Pruning for CIFAR models')
-    parser.add_argument('--task', type=str, default='cifar10', choices=['cifar10', 'cifar100'], help='Dataset to use')
+    parser = argparse.ArgumentParser(description='Hybrid Frequency-Aware Pruning pipeline')
+    parser.add_argument(
+        '--task',
+        type=str,
+        default='cifar10',
+        choices=['cifar10', 'cifar100', 'tiny_imagenet'],
+        help='Dataset to use',
+    )
     parser.add_argument('--train', action='store_true', help='Train the model')
     parser.add_argument('--prune', action='store_true', help='Run hybrid pruning')
     parser.add_argument('--eval', action='store_true', help='Evaluate the model(s)')

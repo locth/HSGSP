@@ -1,3 +1,5 @@
 __pycache__
 .DS_Store
 EXPERIMENT/*
+data/tiny-imagenet-200.zip
+data/tiny-imagenet-200/

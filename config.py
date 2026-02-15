@@ -12,7 +12,7 @@ class Config:
     seed: int = 42
 
     # ========== DATA CONFIGURATION ==========
-    task: str = 'cifar10'  # 'cifar10' or 'cifar100'
+    task: str = 'tiny_imagenet'  # 'cifar10', 'cifar100', or 'tiny_imagenet'
     validation_split: float = 0.1
     data_augmentation: bool = True
     batch_size: int = 128
@@ -20,15 +20,23 @@ class Config:
     # Dataset specific
     num_classes_cifar10: int = 10
     num_classes_cifar100: int = 100
+    num_classes_tiny_imagenet: int = 200
     input_shape_cifar10: Tuple[int, int, int] = (32, 32, 3)
     input_shape_cifar100: Tuple[int, int, int] = (32, 32, 3)
+    input_shape_tiny_imagenet: Tuple[int, int, int] = (64, 64, 3)
+    tiny_imagenet_root: str = "./data/tiny-imagenet-200"
+    tiny_imagenet_auto_download: bool = True
+    tiny_imagenet_url: str = "http://cs231n.stanford.edu/tiny-imagenet-200.zip"
+    tiny_imagenet_use_official_val_for_test: bool = True
+    tiny_imagenet_mean: Tuple[float, float, float] = (0.4802, 0.4481, 0.3975)
+    tiny_imagenet_std: Tuple[float, float, float] = (0.2302, 0.2265, 0.2262)
     # ========== TRAINING CONFIGURATION ==========
     default_epochs: int = 240 
     initial_lr: float = 0.1 # from 7e-4
     pruned_growth_lr: float = 1e-4 # default: 1e-4
     min_lr: float = 1e-5 # default: 1e-5
     momentum: float = 0.9  # for SGD
-    optimizer: str = 'admaw'  # 'sgd' for training, 'adamw' for pruning growth phase
+    optimizer: str = 'sgd'  # 'sgd' for training, 'adamw' for pruning growth phase
 
     # Learning rate schedule
     lr_schedule: str = 'cosine'  # 'cosine', 'exponential', 'step'
@@ -153,6 +161,40 @@ class Config:
                 'mid': (0.25, 0.5),
                 'high': (0.5, 1.0)
             }
+
+        if self.task == "tiny_imagenet":
+            # Task-tuned defaults for Tiny ImageNet (64x64, 200 classes)
+            self.batch_size = 64
+            self.default_epochs = 180
+            self.initial_lr = 0.05
+            self.min_lr = 1e-6
+            self.optimizer = "sgd"
+            self.lr_schedule = "cosine"
+            self.lr_warmup_epochs = 5
+            self.early_stopping_patience = 20
+            self.reduce_lr_patience = 0
+
+            self.l2_regularization = 1e-4
+            self.dropout_rate = 0.35
+            self.spatial_dropout_rate = 0.15
+            self.fc_dropout_rate1 = 0.4
+            self.fc_dropout_rate2 = 0.3
+            self.label_smoothing = 0.1
+            self.use_mixup = True
+            self.mixup_alpha = 0.2
+            self.mixup_prob = 0.5
+
+            self.hybrid_mode = "frequency"
+            self.hybrid_iterations = 20
+            self.hybrid_prune_fraction = 0.05
+            self.hybrid_late_prune_fraction = 0.03
+            self.hybrid_taper_start = 8
+            self.hybrid_min_filters = 16
+            self.hybrid_finetune_epochs = 35
+            self.pruned_growth_lr = 7e-5
+            self.weight_decay = 5e-5
+            self.frequency_regularization_layers = 6
+            self.frn_epochs = 20
 
         # Build directories using the provided task and a timestamp run_id
         exp_root = f"./EXPERIMENT/{self.run_id}_{self.task}"
