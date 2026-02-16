@@ -102,7 +102,7 @@ class Config:
     hybrid_iterations: int = 30
     hybrid_prune_fraction: float = 0.08
     hybrid_late_prune_fraction: float = 0.06
-    hybrid_alpha: float = 0.5
+    hybrid_alpha: float = 0.3
     hybrid_taper_start: int = 15
 
     hybrid_kappa_beta: float = 0.03
@@ -164,7 +164,7 @@ class Config:
 
         if self.task == "tiny_imagenet":
             # Task-tuned defaults for Tiny ImageNet (64x64, 200 classes)
-            self.batch_size = 64
+            self.batch_size = 256
             self.default_epochs = 180
             self.initial_lr = 0.05
             self.min_lr = 1e-6
@@ -184,17 +184,32 @@ class Config:
             self.mixup_alpha = 0.2
             self.mixup_prob = 0.5
 
-            self.hybrid_mode = "frequency"
+            self.hybrid_mode = "original"
             self.hybrid_iterations = 20
-            self.hybrid_prune_fraction = 0.05
-            self.hybrid_late_prune_fraction = 0.03
-            self.hybrid_taper_start = 8
-            self.hybrid_min_filters = 16
-            self.hybrid_finetune_epochs = 35
-            self.pruned_growth_lr = 7e-5
-            self.weight_decay = 5e-5
-            self.frequency_regularization_layers = 6
+            self.hybrid_prune_fraction = 0.08
+            self.hybrid_late_prune_fraction = 0.06
+            self.hybrid_taper_start = 10
+            self.hybrid_min_filters = 12
+            self.hybrid_finetune_epochs = 30
+            self.hybrid_warmup_epochs = 1
+            self.pruned_growth_lr = 1.5e-4
+            self.weight_decay = 1e-4
             self.frn_epochs = 20
+
+            self.hybrid_initial_kappa_ratio = 0.45
+            self.hybrid_kappa_floor_high = 0.3
+            self.hybrid_kappa_floor_low = 0.15
+            self.hybrid_kappa_floor_iter = 10
+            self.hybrid_kappa_acc_beta = 0.15
+
+            self.frn_architecture = "residual"
+            self.frn_hidden_units = (128, 64, 32)
+            self.frn_use_batchnorm = True
+            self.frn_dropout_rate = 0.1
+            self.frn_epochs = 30
+            self.frn_initial_lr = 3e-4
+            self.frn_min_lr = 3e-6
+            self.frn_activation_batches = 24
 
         # Build directories using the provided task and a timestamp run_id
         exp_root = f"./EXPERIMENT/{self.run_id}_{self.task}"
