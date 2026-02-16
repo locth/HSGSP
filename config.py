@@ -12,10 +12,10 @@ class Config:
     seed: int = 42
 
     # ========== DATA CONFIGURATION ==========
-    task: str = 'cifar10'  # 'cifar10' or 'cifar100'
+    task: str = 'cifar100'  # 'cifar10' or 'cifar100'
     validation_split: float = 0.1
     data_augmentation: bool = True
-    batch_size: int = 128
+    batch_size: int = 256
 
     # Dataset specific
     num_classes_cifar10: int = 10
@@ -23,12 +23,12 @@ class Config:
     input_shape_cifar10: Tuple[int, int, int] = (32, 32, 3)
     input_shape_cifar100: Tuple[int, int, int] = (32, 32, 3)
     # ========== TRAINING CONFIGURATION ==========
-    default_epochs: int = 240 
+    default_epochs: int = 250 
     initial_lr: float = 0.1 # from 7e-4
     pruned_growth_lr: float = 1e-4 # default: 1e-4
     min_lr: float = 1e-5 # default: 1e-5
     momentum: float = 0.9  # for SGD
-    optimizer: str = 'admaw'  # 'sgd' for training, 'adamw' for pruning growth phase
+    optimizer: str = 'sgd'  # 'sgd' for training, 'adamw' for pruning growth phase
 
     # Learning rate schedule
     lr_schedule: str = 'cosine'  # 'cosine', 'exponential', 'step'
@@ -37,9 +37,9 @@ class Config:
     lr_decay_steps: int = 20
 
     # Early Stopping (updated)
-    early_stopping_patience: int = 15 # from 0 for training, 15 for pruning
+    early_stopping_patience: int = 0 # from 0 for training, 15 for pruning
     early_stopping_min_delta: float = 1e-4
-    reduce_lr_patience: int = 10 # from 10
+    reduce_lr_patience: int = 10 # 0 for CIFAR-100, from 10
     reduce_lr_factor: float = 0.5
     reduce_lr_min_delta: float = 1e-3
     # fine_tune_label_smoothing: float = 0.03
@@ -60,7 +60,7 @@ class Config:
     fc_dropout_rate1: float = 0.2 # from 0.4
     fc_dropout_rate2: float = 0.2 # from 0.3
 
-    weight_decay: float = 2e-5 # 0 for training, 2e-5 for pruning growth phase
+    weight_decay: float = 0 # 0 for training, 2e-5 for pruning growth phase
 
     # Label Smoothing
     label_smoothing: float = 0.02 # from 0.1
@@ -86,7 +86,7 @@ class Config:
     simple_finetune_lr: float = 1e-5
 
     # ========== AUGMENTATION CONFIGURATION ==========
-    use_mixup: bool = False # from True
+    use_mixup: bool = False # False for CIFAR-10, True for CIFAR-100
     mixup_alpha: float = 0.4
     mixup_prob: float = 0.5
 
@@ -94,7 +94,7 @@ class Config:
     hybrid_iterations: int = 30
     hybrid_prune_fraction: float = 0.08
     hybrid_late_prune_fraction: float = 0.06
-    hybrid_alpha: float = 0.5
+    hybrid_alpha: float = 1
     hybrid_taper_start: int = 15
 
     hybrid_kappa_beta: float = 0.03
@@ -136,7 +136,7 @@ class Config:
     frn_epochs: int = 15
     frn_cosine_min_factor: float = 0.1
     frn_batch_size: int = 256
-    frn_weight_clip: float = 2.0  
+    frn_weight_clip: float = 2.0
 
     # ========== PATHs CONFIGURATION ==========
     run_id: str = field(default_factory=lambda: datetime.now().strftime("%d%m%Y_%H%M%S"))
